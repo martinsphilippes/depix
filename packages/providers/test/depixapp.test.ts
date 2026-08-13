@@ -14,7 +14,7 @@ const VALID_LIQUID_ADDRESS =
   'lq1qqw8jkm9xkxtjqfz7xm3dtxq9j7kqz2h8lm5xn4qz9v2r6t8y3u5w7e9r1t3y5u7i9o1p3a5s7d9f1g3h5j7k9l';
 
 function fakeFetch(handler: (url: string, init: RequestInit) => Response): typeof fetch {
-  return (async (input: RequestInfo | URL, init: RequestInit = {}) =>
+  return (async (input: unknown, init: RequestInit = {}) =>
     handler(String(input), init)) as typeof fetch;
 }
 

@@ -11,9 +11,9 @@
     "node": ">=22"
   },
   "scripts": {
-    "build": "tsc --build",
-    "typecheck": "tsc --build --force",
-    "test": "node --test --experimental-strip-types \"packages/*/test/*.test.ts\"",
+    "build": "npm run typecheck && npm run build --workspace=@depix/web",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "node --test --experimental-strip-types \"packages/*/test/*.test.ts\" \"apps/*/test/*.test.ts\"",
     "test:concurrency": "node --test --experimental-strip-types \"packages/ledger/test/concurrency.pg.test.ts\"",
     "migrate": "node --experimental-strip-types packages/db/src/cli.ts migrate",
     "clean": "rm -rf packages/*/dist apps/*/dist tsconfig.tsbuildinfo"
