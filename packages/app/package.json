@@ -1,0 +1,16 @@
+{
+  "name": "@depix/app",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@depix/core": "*",
+    "@depix/db": "*",
+    "@depix/ledger": "*",
+    "@depix/providers": "*"
+  }
+}
