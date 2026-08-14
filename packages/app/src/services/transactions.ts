@@ -28,6 +28,7 @@ import {
   type TransactionEventDoc,
   asNumber,
   txIdempotencyId,
+  toDate,
 } from '@depix/firestore';
 import type { AssetCode } from '@depix/core';
 
@@ -276,6 +277,3 @@ export async function transactionTimeline(db: Db, transactionId: string): Promis
   });
 }
 
-function toDate(value: Date | { toDate(): Date }): Date {
-  return value instanceof Date ? value : value.toDate();
-}

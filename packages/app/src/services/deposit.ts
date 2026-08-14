@@ -26,6 +26,7 @@ import {
   type PixTransactionDoc,
   e2eIndexId,
   liquidTxId,
+  toDate,
 } from '@depix/firestore';
 import { creditPendingIn, settlePendingIn } from '@depix/ledger';
 import type { DepixProvider } from '@depix/providers';
@@ -332,6 +333,3 @@ export async function confirmDepositOnChain(
   return { completed: true };
 }
 
-function toDate(value: Date | { toDate(): Date }): Date {
-  return value instanceof Date ? value : value.toDate();
-}

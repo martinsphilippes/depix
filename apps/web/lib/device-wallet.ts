@@ -33,7 +33,7 @@
 import { type VaultBlob, isVaultBlob, sealVault } from '@depix/wallet/vault';
 import type { SendStage } from '@depix/wallet';
 
-const STORAGE_KEY = 'depix.vault.v1';
+const STORAGE_KEY = 'depix.vault.v2';
 
 /**
  * Rede do dispositivo.
@@ -108,11 +108,41 @@ export async function persistWallet(wallet: CreatedWallet, pin: string): Promise
     mnemonic: wallet.mnemonic,
     pin,
     fingerprint: wallet.fingerprint,
+    ctDescriptor: wallet.ctDescriptor,
     network: NETWORK,
   });
   localStorage.setItem(STORAGE_KEY, JSON.stringify(blob));
   return blob;
 }
+
+/**
+ * Endereço para receber, derivado aqui — nunca pedido ao servidor.
+ *
+ * Um endereço vindo do servidor permitiria a um servidor comprometido
+ * redirecionar depósitos. Este vem do descriptor do próprio usuário, e por
+ * isso não exige o PIN: receber dinheiro não deveria custar uma cerimônia.
+ *
+ * O índice é guardado localmente e avança a cada endereço gerado. Reusar
+ * endereço não perde dinheiro, mas junta na cadeia pagamentos que não têm
+ * por que estar juntos.
+ */
+export async function deviceAddress(opts: { fresh?: boolean } = {}): Promise<string> {
+  const vault = loadVault();
+  if (!vault) {
+    throw new Error('Nenhuma carteira neste dispositivo. Crie ou restaure uma antes de receber.');
+  }
+
+  const proximo = Number(localStorage.getItem(INDEX_KEY) ?? '0');
+  const indice = opts.fresh ? proximo + 1 : proximo;
+
+  const { receiveAddress } = await import('@depix/wallet');
+  const { address, index } = receiveAddress(vault.ctDescriptor, vault.network, indice);
+
+  localStorage.setItem(INDEX_KEY, String(index));
+  return address;
+}
+
+const INDEX_KEY = 'depix.receiveIndex.v1';
 
 /**
  * Apaga o cofre deste navegador.
@@ -123,6 +153,13 @@ export async function persistWallet(wallet: CreatedWallet, pin: string): Promise
  */
 export function forgetWallet(): void {
   localStorage.removeItem(STORAGE_KEY);
+  localStorage.removeItem(INDEX_KEY);
+}
+
+/** QR de um texto, gerado no dispositivo — sem serviço externo nem dependência nova. */
+export async function qrDataUri(text: string, pixelsPerModule = 6): Promise<string> {
+  const { stringToQr } = await import('lwk_wasm');
+  return stringToQr(text, pixelsPerModule);
 }
 
 export interface SignAndSendParams {

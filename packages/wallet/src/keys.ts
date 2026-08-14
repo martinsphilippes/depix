@@ -124,6 +124,27 @@ export function openWatchOnly(ctDescriptor: string, network: NetworkName): Wolle
 }
 
 /**
+ * Endereço de recebimento, derivado do descriptor watch-only.
+ *
+ * Não precisa da frase — e isso é o ponto: receber dinheiro não deveria
+ * exigir destravar o cofre. Precisa, sim, ser derivado **localmente**: um
+ * endereço vindo do servidor permitiria a um servidor comprometido
+ * redirecionar depósitos para a carteira dele.
+ *
+ * O índice avança para não reusar endereço. Reusar não perde dinheiro, mas
+ * junta na cadeia pagamentos que não têm por que estar juntos.
+ */
+export function receiveAddress(
+  ctDescriptor: string,
+  network: NetworkName,
+  index = 0,
+): { address: string; index: number } {
+  const wollet = openWatchOnly(ctDescriptor, network);
+  const generated = wollet.address(index);
+  return { address: generated.address().toString(), index: generated.index() };
+}
+
+/**
  * Confere que um descriptor corresponde ao mnemônico.
  *
  * Usado no fluxo de recuperação: antes de restaurar uma carteira, confirma

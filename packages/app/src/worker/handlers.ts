@@ -34,6 +34,7 @@ import {
 } from '../services/deposit.ts';
 import { confirmSend } from '../services/send.ts';
 import { getTransaction } from '../services/transactions.ts';
+import { notifications } from '../services/notifications.ts';
 import { markWebhookProcessed } from '../services/webhooks.ts';
 import { type Job, type JobHandler, RetryLater, enqueue } from './queue.ts';
 
@@ -264,10 +265,24 @@ export function createConfirmationHandler(db: Db, deps: ConfirmHandlerDeps): Job
       if (!result.completed && result.reason === 'awaiting_confirmations') {
         throw new RetryLater('aguardando confirmações', CONFIRM_POLL_MS);
       }
+
+      // A notificação vem **depois** da conclusão, nunca antes: avisar
+      // "dinheiro recebido" e o crédito falhar em seguida é pior do que não
+      // avisar. Falhar em notificar, por outro lado, não desfaz o crédito —
+      // por isso o erro é engolido em vez de derrubar o job.
+      if (result.completed) {
+        await notifyQuietly(() =>
+          notifications.depositConfirmed(db, {
+            userId: transaction.userId,
+            transactionId,
+            amount: money('BRL', transaction.amount),
+          }),
+        );
+      }
       return;
     }
 
-    await confirmSend(db, {
+    const enviado = await confirmSend(db, {
       transactionId,
       userId: transaction.userId,
       principal: money('DEPIX', transaction.amount),
@@ -277,6 +292,16 @@ export function createConfirmationHandler(db: Db, deps: ConfirmHandlerDeps): Job
       txid,
       actor: 'worker:confirm',
     });
+
+    if (enviado.completed) {
+      await notifyQuietly(() =>
+        notifications.sendConfirmed(db, {
+          userId: transaction.userId,
+          transactionId,
+          amount: rescale(money('DEPIX', transaction.amount), 'BRL', 'floor'),
+        }),
+      );
+    }
   };
 }
 
@@ -386,4 +411,20 @@ export async function openReconciliation(
   await db
     .collection(COLLECTIONS.reconciliationEntries)
     .add(doc as unknown as Record<string, unknown>);
+}
+
+/**
+ * Notifica sem deixar a falha derrubar o job.
+ *
+ * A notificação é consequência do dinheiro ter andado, não condição para
+ * ele andar. Se o job morresse aqui, o worker repetiria uma confirmação já
+ * concluída — trocando um aviso perdido por um retry inútil sobre dinheiro
+ * já liquidado.
+ */
+async function notifyQuietly(fn: () => Promise<unknown>): Promise<void> {
+  try {
+    await fn();
+  } catch {
+    // Silêncio deliberado: ver acima.
+  }
 }

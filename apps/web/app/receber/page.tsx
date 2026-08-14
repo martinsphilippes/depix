@@ -3,20 +3,29 @@
 /**
  * Receber.
  *
- * Duas opções: Pix (o operador converte e manda para a carteira do usuário)
- * e DePix direto (endereço da própria carteira). Lightning aparece como
- * indisponível, com o motivo — em vez de um botão que falha.
+ * O endereço de recebimento é derivado **aqui**, da chave do próprio usuário
+ * — nunca pedido ao servidor. A razão não é purismo: um servidor comprometido
+ * que respondesse "seu endereço é X" desviaria todos os depósitos, e o
+ * usuário só descobriria quando o dinheiro não chegasse. É o mesmo motivo
+ * pelo qual assinamos no dispositivo.
+ *
+ * O QR sai do próprio LWK (`stringToQr`), então não há serviço externo
+ * gerando imagem a partir do endereço nem dependência nova para auditar.
  */
 
 import Link from 'next/link';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 
 import { ApiRequestError, type DepositIntent, api } from '../../lib/api';
+import { deviceAddress, hasWallet, qrDataUri } from '../../lib/device-wallet';
 
 type Modo = 'escolha' | 'pix' | 'carteira';
 
 export default function Receber() {
   const [modo, setModo] = useState<Modo>('escolha');
+  const [temCarteira, setTemCarteira] = useState(true);
+
+  useEffect(() => setTemCarteira(hasWallet()), []);
 
   return (
     <>
@@ -25,9 +34,25 @@ export default function Receber() {
       </Link>
       <h1>Receber</h1>
 
-      {modo === 'escolha' && <Escolha onSelect={setModo} />}
-      {modo === 'pix' && <ReceberPix />}
-      {modo === 'carteira' && <ReceberCarteira />}
+      {!temCarteira ? (
+        <div className="notice notice-warning">
+          <strong>Este dispositivo ainda não tem sua carteira.</strong>
+          <br />
+          O endereço de recebimento é gerado a partir da sua chave, aqui no aparelho — sem
+          carteira não há endereço para gerar.
+          <br />
+          <br />
+          <Link href="/carteira" className="btn" style={{ display: 'inline-block' }}>
+            Criar ou restaurar carteira
+          </Link>
+        </div>
+      ) : (
+        <>
+          {modo === 'escolha' && <Escolha onSelect={setModo} />}
+          {modo === 'pix' && <ReceberPix />}
+          {modo === 'carteira' && <ReceberCarteira />}
+        </>
+      )}
     </>
   );
 }
@@ -63,10 +88,31 @@ function Escolha({ onSelect }: { onSelect: (m: Modo) => void }) {
   );
 }
 
+/** Imagem do QR. `image-rendering: pixelated` evita o borrão do upscale. */
+function Qr({ uri, label }: { uri: string; label: string }) {
+  return (
+    // eslint-disable-next-line @next/next/no-img-element
+    <img
+      src={uri}
+      alt={label}
+      style={{
+        width: '100%',
+        maxWidth: 260,
+        display: 'block',
+        margin: '0 auto',
+        imageRendering: 'pixelated',
+        border: '16px solid #fff',
+        borderRadius: 8,
+        background: '#fff',
+      }}
+    />
+  );
+}
+
 function ReceberPix() {
   const [amount, setAmount] = useState('');
-  const [address, setAddress] = useState('');
   const [intent, setIntent] = useState<DepositIntent | null>(null);
+  const [qr, setQr] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -76,9 +122,15 @@ function ReceberPix() {
     setBusy(true);
     setError(null);
     try {
-      setIntent(await api.createDeposit(amount, address));
+      // O destino é a carteira do próprio usuário, derivada aqui. O usuário
+      // não precisa colar endereço nenhum — e não deveria mesmo: pedir isso
+      // era um convite a colar o endereço errado.
+      const destino = await deviceAddress({ fresh: true });
+      const criado = await api.createDeposit(amount, destino);
+      setIntent(criado);
+      setQr(await qrDataUri(criado.qrCopyPaste));
     } catch (err) {
-      setError(err instanceof ApiRequestError ? err.message : 'Não foi possível gerar a cobrança');
+      setError(err instanceof ApiRequestError ? err.message : (err as Error).message);
     } finally {
       setBusy(false);
     }
@@ -101,6 +153,8 @@ function ReceberPix() {
           </div>
           <div className="balance-sub">{intent.status}</div>
         </div>
+
+        {qr && <Qr uri={qr} label="QR Code do Pix" />}
 
         <div className="section-title">Pix copia e cola</div>
         <div className="copy-box">{intent.qrCopyPaste}</div>
@@ -139,24 +193,14 @@ function ReceberPix() {
         />
       </div>
 
-      <div className="field">
-        <label htmlFor="address">Endereço da sua carteira</label>
-        <input
-          id="address"
-          placeholder="lq1..."
-          value={address}
-          onChange={(e) => setAddress(e.target.value)}
-        />
-        {/* O endereço é do próprio usuário: o valor vai direto para ele,
-            sem passar pela nossa custódia. */}
-        <div className="tx-meta" style={{ marginTop: 7 }}>
-          O valor vai direto para a sua carteira. Nós não guardamos o seu dinheiro.
-        </div>
+      <div className="notice notice-info">
+        O valor vai direto para a sua carteira, num endereço gerado aqui no seu dispositivo. Nós
+        não guardamos o seu dinheiro e não escolhemos para onde ele vai.
       </div>
 
       {error && <div className="notice notice-danger">{error}</div>}
 
-      <button type="submit" className="btn" disabled={busy || !amount || !address}>
+      <button type="submit" className="btn" disabled={busy || !amount}>
         {busy ? 'Gerando…' : 'Gerar cobrança'}
       </button>
     </form>
@@ -164,12 +208,65 @@ function ReceberPix() {
 }
 
 function ReceberCarteira() {
+  const [address, setAddress] = useState<string | null>(null);
+  const [qr, setQr] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
+
+  useEffect(() => {
+    void (async () => {
+      try {
+        const a = await deviceAddress();
+        setAddress(a);
+        setQr(await qrDataUri(a));
+      } catch (err) {
+        setError((err as Error).message);
+      }
+    })();
+  }, []);
+
+  async function novoEndereco() {
+    const a = await deviceAddress({ fresh: true });
+    setAddress(a);
+    setQr(await qrDataUri(a));
+  }
+
   return (
     <>
       <div className="notice notice-warning">
         <strong>Atenção à rede.</strong> Envie apenas DePix pela rede Liquid para este endereço.
         Valores enviados por outra rede não podem ser recuperados.
       </div>
+
+      {error && <div className="notice notice-danger">{error}</div>}
+
+      {qr && <Qr uri={qr} label="QR Code do endereço da carteira" />}
+
+      {address && (
+        <>
+          <div className="section-title">Seu endereço</div>
+          <div className="copy-box">{address}</div>
+
+          <button
+            type="button"
+            className="btn"
+            onClick={() => {
+              void navigator.clipboard.writeText(address);
+              setCopied(true);
+              setTimeout(() => setCopied(false), 2000);
+            }}
+          >
+            {copied ? 'Copiado ✓' : 'Copiar endereço'}
+          </button>
+
+          {/* Endereço novo a cada recebimento não protege o dinheiro; protege
+              a privacidade, evitando que pagamentos distintos fiquem ligados
+              entre si na cadeia. */}
+          <button type="button" className="btn btn-secondary" onClick={novoEndereco}>
+            Gerar outro endereço
+          </button>
+        </>
+      )}
 
       <div className="card">
         <div className="review-row">
@@ -180,12 +277,6 @@ function ReceberCarteira() {
           <span className="review-label">Moeda aceita</span>
           <span className="review-value">DePix</span>
         </div>
-      </div>
-
-      <div className="notice notice-info">
-        A geração de endereço acontece no seu dispositivo, a partir da sua chave — por isso
-        depende da carteira estar desbloqueada. Esta tela será conectada à assinatura local na
-        próxima etapa.
       </div>
     </>
   );

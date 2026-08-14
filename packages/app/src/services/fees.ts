@@ -7,7 +7,7 @@
  */
 
 import { type FeeRule, type TxKind, NO_FEE } from '@depix/core';
-import { COLLECTIONS, type AuditLogDoc, type Db, type FeeRuleDoc } from '@depix/firestore';
+import { COLLECTIONS, type AuditLogDoc, type Db, type FeeRuleDoc, toDate } from '@depix/firestore';
 
 export async function resolvePlatformFeeRule(
   db: Db,
@@ -100,6 +100,3 @@ export async function setPlatformFeeRule(
   await batch.commit();
 }
 
-function toDate(value: Date | { toDate(): Date }): Date {
-  return value instanceof Date ? value : value.toDate();
-}

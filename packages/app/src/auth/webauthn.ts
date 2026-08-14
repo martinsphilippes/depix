@@ -43,7 +43,10 @@ import {
   type WebAuthnCredentialDoc,
   asNumber,
   isAlreadyExists,
+  toDate,
 } from '@depix/firestore';
+
+import { writeAuditLog } from '../services/audit.ts';
 
 export interface WebAuthnConfig {
   /** Nome exibido no diálogo do sistema. */
@@ -558,9 +561,8 @@ async function recordCounterRegression(
   db: Db,
   params: { credentialId: string; storedCounter: number; newCounter: number },
 ): Promise<void> {
-  await db.collection(COLLECTIONS.auditLogs).add({
+  await writeAuditLog(db, {
     actorKind: 'system',
-    actorId: null,
     action: 'webauthn.counter_regression',
     objectKind: 'credential',
     objectId: params.credentialId,
@@ -569,11 +571,6 @@ async function recordCounterRegression(
       storedCounter: String(params.storedCounter),
       newCounter: String(params.newCounter),
     },
-    ipHash: null,
-    createdAt: new Date(),
   });
 }
 
-function toDate(value: Date | { toDate(): Date }): Date {
-  return value instanceof Date ? value : value.toDate();
-}

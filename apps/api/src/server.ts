@@ -35,10 +35,31 @@ import {
   maskPixKey,
 } from '@depix/providers';
 import {
+  type Contact,
   type HistoryItem,
   type SessionRecord,
+  adminUserSummary,
+  assertAdmin,
+  listAuditLogs,
+  listForReview,
+  setUserStatus,
+  writeAuditLog,
+  changeContactDestination,
   createDepositIntent,
+  deleteContact,
   enforcePolicy,
+  findContactByDestination,
+  listContacts,
+  listNotifications,
+  listOpenFindings,
+  listRuns,
+  markAllRead,
+  markContactUsed,
+  markRead,
+  resolveFinding,
+  runReconciliation,
+  saveContact,
+  unreadCount,
   evaluateSendPolicy,
   assertWithinRateLimit,
   createSession,
@@ -522,11 +543,17 @@ export async function buildServer(deps: ServerDeps): Promise<FastifyInstance> {
 
     // Política de segurança ANTES de reservar saldo: um envio que vai ser
     // recusado não deve deixar o valor preso em pending_out.
+    //
+    // O contato entra aqui porque é ele que carrega `updatedAt`: enviar valor
+    // alto para um contato cujo endereço mudou nas últimas 24 h exige
+    // confirmação. Sem esta consulta a regra existiria e nunca dispararia.
+    const contato = await findContactByDestination(deps.db, userId, body.destinationAddress);
     const decision = await evaluateSendPolicy(deps.db, {
       userId,
       destination: body.destinationAddress,
       totalAmount: amountDepix,
       deviceTrusted: await isDeviceTrusted(deps.db, userId, session.deviceId),
+      contactUpdatedAt: contato?.updatedAt ?? null,
     });
     enforcePolicy(decision, session, { reauthAvailable: REAUTH_AVAILABLE });
 
@@ -589,6 +616,12 @@ export async function buildServer(deps: ServerDeps): Promise<FastifyInstance> {
       amount: transaction.amount,
       actor: `user:${userId}`,
     });
+
+    // Contabiliza o uso do contato — só depois de a transação existir na
+    // rede, nunca no preparo, que pode ser abandonado.
+    if (transaction.counterparty) {
+      await markContactUsed(deps.db, userId, transaction.counterparty);
+    }
 
     // A partir daqui quem conclui é o worker, ao ver confirmações reais.
     await enqueueConfirmation(deps.db, {
@@ -664,6 +697,248 @@ export async function buildServer(deps: ServerDeps): Promise<FastifyInstance> {
     return { events };
   });
 
+  // --- Contatos (§29) -------------------------------------------------------
+  app.get('/contacts', authed, async (request) => {
+    const { userId } = sessionOf(request);
+    return { contacts: (await listContacts(deps.db, userId)).map(toApiContact) };
+  });
+
+  app.post('/contacts', authed, async (request, reply) => {
+    const { userId } = sessionOf(request);
+    const body = request.body as { label?: string; destination?: string; kind?: string };
+
+    const contato = await saveContact(deps.db, {
+      userId,
+      label: String(body.label ?? ''),
+      destination: String(body.destination ?? ''),
+      kind: body.kind === 'pix_key' ? 'pix_key' : 'liquid_address',
+    });
+
+    return reply.status(201).send(toApiContact(contato));
+  });
+
+  /**
+   * Trocar o endereço de um contato é operação sensível: exige confirmação
+   * recente, porque é o passo do ataque em que alguém com a sessão redireciona
+   * pagamentos futuros e conta com a vítima conferindo só o nome.
+   */
+  app.post('/contacts/:id/destination', authed, async (request) => {
+    const session = sessionOf(request);
+    const { id } = request.params as { id: string };
+    const body = request.body as { destination?: string };
+
+    enforcePolicy(
+      { requiresReauth: true, reasons: ['recently_changed_contact'], explanation: 'Alterar o endereço de um contato exige confirmação de identidade.' },
+      session,
+      { reauthAvailable: REAUTH_AVAILABLE },
+    );
+
+    const contato = await changeContactDestination(deps.db, {
+      userId: session.userId,
+      contactId: id,
+      newDestination: String(body.destination ?? ''),
+    });
+
+    return toApiContact(contato);
+  });
+
+  app.delete('/contacts/:id', authed, async (request) => {
+    const { userId } = sessionOf(request);
+    const { id } = request.params as { id: string };
+    await deleteContact(deps.db, userId, id);
+    return { removed: true };
+  });
+
+  // --- Notificações (§30) ---------------------------------------------------
+  app.get('/notifications', authed, async (request) => {
+    const { userId } = sessionOf(request);
+    const [items, unread] = await Promise.all([
+      listNotifications(deps.db, userId),
+      unreadCount(deps.db, userId),
+    ]);
+    return {
+      unread,
+      items: items.map((n) => ({
+        id: n.id,
+        kind: n.kind,
+        title: n.title,
+        body: n.body,
+        transactionId: n.transactionId,
+        read: n.read,
+        createdAt: toIsoString(n.createdAt),
+      })),
+    };
+  });
+
+  app.post('/notifications/:id/read', authed, async (request) => {
+    const { userId } = sessionOf(request);
+    const { id } = request.params as { id: string };
+    return { read: await markRead(deps.db, userId, id) };
+  });
+
+  app.post('/notifications/read-all', authed, async (request) => {
+    const { userId } = sessionOf(request);
+    return { marked: await markAllRead(deps.db, userId) };
+  });
+
+  // --- Painel administrativo (§24-25) ---------------------------------------
+  //
+  // Toda rota daqui para baixo passa por `assertAdmin`, e toda ação exige
+  // motivo — `writeAuditLog` recusa ação administrativa sem ele. Não há rota
+  // para promover alguém a admin: o primeiro nasce por script de operação,
+  // porque uma rota dessas é o alvo que um atacante com sessão procura.
+
+  /** `auditor` lê; `operator` também age. */
+  async function admin(request: FastifyRequest, minimo: 'auditor' | 'operator' = 'auditor') {
+    const { userId } = sessionOf(request);
+    return assertAdmin(deps.db, userId, minimo);
+  }
+
+  function motivoDe(request: FastifyRequest): string {
+    const reason = (request.body as { reason?: string } | undefined)?.reason?.trim();
+    if (!reason) {
+      throw new DomainError(
+        'reason_required',
+        'Ação administrativa exige motivo. Sem ele a trilha de auditoria não serve para auditar.',
+      );
+    }
+    return reason;
+  }
+
+  app.get('/admin/me', authed, async (request) => {
+    const me = await admin(request);
+    return { userId: me.userId, role: me.role };
+  });
+
+  app.get('/admin/reconciliation', authed, async (request) => {
+    await admin(request);
+    const [findings, runs] = await Promise.all([
+      listOpenFindings(deps.db),
+      listRuns(deps.db, 20),
+    ]);
+
+    return {
+      openFindings: findings.map((f) => ({
+        id: f.id,
+        kind: f.kind,
+        transactionId: f.transactionId,
+        expected: f.expected,
+        observed: f.observed,
+        createdAt: toIsoString(f.createdAt),
+      })),
+      runs: runs.map((r) => ({
+        id: r.id,
+        trigger: r.trigger,
+        status: r.status,
+        findings: r.findings,
+        accountsChecked: asPlainNumber(r.accountsChecked),
+        transactionsChecked: asPlainNumber(r.transactionsChecked),
+        startedAt: toIsoString(r.startedAt),
+        finishedAt: r.finishedAt ? toIsoString(r.finishedAt) : null,
+        error: r.error,
+      })),
+    };
+  });
+
+  app.post('/admin/reconciliation/run', authed, async (request) => {
+    await admin(request, 'operator');
+    const resultado = await runReconciliation(deps.db, { trigger: 'manual' });
+    return {
+      runId: resultado.runId,
+      clean: resultado.clean,
+      findings: resultado.findings,
+      accountsChecked: resultado.accountsChecked,
+      transactionsChecked: resultado.transactionsChecked,
+    };
+  });
+
+  app.post('/admin/reconciliation/:id/resolve', authed, async (request) => {
+    const me = await admin(request, 'operator');
+    const { id } = request.params as { id: string };
+    const body = request.body as { note?: string; status?: 'resolved' | 'reconciled' };
+
+    await resolveFinding(deps.db, {
+      id,
+      adminId: me.userId,
+      note: String(body.note ?? ''),
+      ...(body.status ? { status: body.status } : {}),
+    });
+
+    await writeAuditLog(deps.db, {
+      actorKind: 'admin',
+      actorId: me.userId,
+      action: 'reconciliation.resolved',
+      objectKind: 'reconciliation_entry',
+      objectId: id,
+      reason: String(body.note ?? ''),
+    });
+
+    return { resolved: true };
+  });
+
+  app.get('/admin/review', authed, async (request) => {
+    await admin(request);
+    const items = await listForReview(deps.db);
+    return {
+      items: items.map((t) => ({
+        ...t,
+        createdAt: toIsoString(t.createdAt),
+        updatedAt: toIsoString(t.updatedAt),
+      })),
+    };
+  });
+
+  app.get('/admin/users/:id', authed, async (request) => {
+    await admin(request);
+    const { id } = request.params as { id: string };
+    const resumo = await adminUserSummary(deps.db, id);
+    if (!resumo) throw new DomainError('user_not_found', 'Usuário não encontrado');
+    return { ...resumo, createdAt: toIsoString(resumo.createdAt) };
+  });
+
+  app.post('/admin/users/:id/status', authed, async (request) => {
+    const me = await admin(request, 'operator');
+    const { id } = request.params as { id: string };
+    const body = request.body as { status?: string };
+    const status = body.status;
+
+    if (status !== 'active' && status !== 'suspended' && status !== 'closed') {
+      throw new DomainError('invalid_status', 'Status deve ser active, suspended ou closed');
+    }
+
+    await setUserStatus(deps.db, {
+      userId: id,
+      status,
+      adminId: me.userId,
+      reason: motivoDe(request),
+    });
+
+    return { userId: id, status };
+  });
+
+  app.get('/admin/audit', authed, async (request) => {
+    await admin(request);
+    const query = request.query as { objectId?: string; actorId?: string };
+    const logs = await listAuditLogs(deps.db, {
+      ...(query.objectId ? { objectId: query.objectId } : {}),
+      ...(query.actorId ? { actorId: query.actorId } : {}),
+    });
+
+    return {
+      items: logs.map((l) => ({
+        id: l.id,
+        actorKind: l.actorKind,
+        actorId: l.actorId,
+        action: l.action,
+        objectKind: l.objectKind,
+        objectId: l.objectId,
+        reason: l.reason,
+        metadata: l.metadata,
+        createdAt: toIsoString(l.createdAt),
+      })),
+    };
+  });
+
   // --- Webhook --------------------------------------------------------------
   // Responde rápido e não processa nada de forma síncrona.
   app.post('/webhooks/depix', async (request, reply) => {
@@ -716,12 +991,62 @@ function toApiHistoryItem(item: HistoryItem): Record<string, unknown> {
   };
 }
 
+function toApiContact(contact: Contact): Record<string, unknown> {
+  return {
+    id: contact.id,
+    label: contact.label,
+    kind: contact.kind,
+    destination: contact.destination,
+    timesUsed: contact.timesUsed,
+    lastUsedAt: contact.lastUsedAt ? toIsoString(contact.lastUsedAt) : null,
+    updatedAt: toIsoString(contact.updatedAt),
+  };
+}
+
+/**
+ * Data para JSON.
+ *
+ * O Firestore devolve `Timestamp`, não `Date`, quando o documento vem de uma
+ * leitura crua. Chamar `.toISOString()` direto funciona no caminho em que o
+ * objeto foi construído em memória e explode no outro — este helper cobre os
+ * dois.
+ */
+function toIsoString(value: Date | { toDate?: () => Date }): string {
+  if (value instanceof Date) return value.toISOString();
+  const asDate = value?.toDate?.();
+  if (asDate) return asDate.toISOString();
+  return new Date(value as unknown as string).toISOString();
+}
+
+/**
+ * `useBigInt` faz todo inteiro voltar como `bigint`, inclusive contadores.
+ * `JSON.stringify` lança em bigint, então contador que atravessa HTTP passa
+ * por aqui.
+ */
+function asPlainNumber(value: number | bigint): number {
+  return typeof value === 'bigint' ? Number(value) : value;
+}
+
 const STATUS_BY_CODE: Readonly<Record<string, number>> = {
   insufficient_funds: 422,
   invalid_amount: 400,
   invalid_idempotency_key: 400,
   rate_limited: 429,
   reauth_required: 403,
+  not_admin: 403,
+  insufficient_role: 403,
+  reason_required: 400,
+  audit_reason_required: 400,
+  resolution_note_required: 400,
+  sensitive_field_in_audit: 400,
+  contact_not_found: 404,
+  contact_conflict: 409,
+  finding_not_found: 404,
+  user_not_found: 404,
+  invalid_status: 400,
+  missing_label: 400,
+  label_too_long: 400,
+  missing_destination: 400,
   limit_exceeded: 422,
   transaction_not_found: 404,
   unknown_ledger_account: 404,

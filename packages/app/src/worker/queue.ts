@@ -26,7 +26,7 @@
  */
 
 import { DomainError, ProviderError } from '@depix/core';
-import { COLLECTIONS, type Db, type JobDoc, asNumber, compositeId, isAlreadyExists } from '@depix/firestore';
+import { COLLECTIONS, type Db, type JobDoc, asNumber, compositeId, isAlreadyExists, toDate } from '@depix/firestore';
 
 /** Validade da posse de um job. Expirada, outro worker pode reivindicar. */
 export const DEFAULT_LEASE_MS = 60_000;
@@ -391,6 +391,3 @@ function errorMessage(err: unknown): string {
   return String(err).slice(0, 500);
 }
 
-function toDate(value: Date | { toDate(): Date }): Date {
-  return value instanceof Date ? value : value.toDate();
-}

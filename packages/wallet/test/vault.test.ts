@@ -20,9 +20,17 @@ import {
 
 const PIN = '314159';
 const NETWORK = 'testnet' as const;
+/** Watch-only e público — guardado em claro de propósito (ver vault.ts). */
+const DESCRIPTOR = 'ct(slip77(ab),elwpkh([00000000/84h/1h/0h]tpubDDEXEMPLO/<0;1>/*))#exemplo0';
 
 async function seal(mnemonic: string, pin = PIN) {
-  return sealVault({ mnemonic, pin, fingerprint: 'aabbccdd', network: NETWORK });
+  return sealVault({
+    mnemonic,
+    pin,
+    fingerprint: 'aabbccdd',
+    ctDescriptor: DESCRIPTOR,
+    network: NETWORK,
+  });
 }
 
 describe('cofre local — a frase cifrada em repouso', () => {
@@ -144,14 +152,14 @@ describe('leitura do armazenamento local', () => {
   it('recusa qualquer coisa que não tenha a forma esperada', () => {
     // localStorage é escrevível por qualquer código da mesma origem, então
     // não é fonte confiável de estrutura.
-    for (const lixo of [null, 'texto', 42, {}, { v: 2 }, { v: 1, kdf: 'md5' }]) {
+    for (const lixo of [null, 'texto', 42, {}, { v: 1 }, { v: 3 }, { v: 2, kdf: 'md5' }]) {
       assert.equal(isVaultBlob(lixo), false, `aceitou ${JSON.stringify(lixo)}`);
     }
   });
 
   it('recusa cofre de versão futura em vez de tentar decifrar', async () => {
     const blob = await seal(generateMnemonic());
-    await assert.rejects(() => openVault({ ...blob, v: 2 as never }, PIN), {
+    await assert.rejects(() => openVault({ ...blob, v: 3 as never }, PIN), {
       message: /formato que esta versão não reconhece/,
     });
   });

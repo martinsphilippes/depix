@@ -47,6 +47,7 @@ async function cofre(mnemonic = generateMnemonic(), fingerprint?: string) {
     mnemonic,
     pin: PIN,
     fingerprint: fingerprint ?? identidade.fingerprint,
+    ctDescriptor: identidade.ctDescriptor,
     network: 'testnet',
   });
 }

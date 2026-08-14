@@ -22,7 +22,9 @@
  */
 
 import { type TxKind, type TxStatus, DomainError, formatBRL, money, rescale } from '@depix/core';
-import { COLLECTIONS, type Db, type LimitsDoc, type TransactionDoc, asNumber } from '@depix/firestore';
+import { COLLECTIONS, type Db, type LimitsDoc, type TransactionDoc, asNumber, toDate } from '@depix/firestore';
+
+import { writeAuditLog } from './audit.ts';
 
 /**
  * Limites padrão de uma conta nova.
@@ -264,7 +266,9 @@ export async function setUserLimits(
     .doc(`${COLLECTIONS.limits}/${params.userId}`)
     .set(updated as unknown as Record<string, unknown>, { merge: true });
 
-  await db.collection(COLLECTIONS.auditLogs).add({
+  // Pelo helper, e não direto na coleção: é ele que recusa ação
+  // administrativa sem motivo.
+  await writeAuditLog(db, {
     actorKind: 'admin',
     actorId: params.adminId,
     action: 'limits.update',
@@ -274,8 +278,6 @@ export async function setUserLimits(
     metadata: Object.fromEntries(
       Object.entries(params.changes).map(([k, v]) => [k, String(v)]),
     ),
-    ipHash: null,
-    createdAt: new Date(),
   });
 }
 
@@ -286,6 +288,3 @@ function toBrlCents(amount: bigint, assetCode: string): bigint {
   return rescale(money('DEPIX', amount), 'BRL', 'floor').amount;
 }
 
-function toDate(value: Date | { toDate(): Date }): Date {
-  return value instanceof Date ? value : value.toDate();
-}

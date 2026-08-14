@@ -12,3 +12,8 @@ export * from './crypto/at-rest.ts';
 export * from './services/wallets.ts';
 export * from './services/limits.ts';
 export * from './services/security-policy.ts';
+export * from './services/audit.ts';
+export * from './services/contacts.ts';
+export * from './services/notifications.ts';
+export * from './services/reconciliation.ts';
+export * from './services/admin.ts';

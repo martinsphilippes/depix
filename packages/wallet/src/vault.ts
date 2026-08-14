@@ -51,7 +51,7 @@ export const MIN_PIN_LENGTH = 6;
 
 export interface VaultBlob {
   /** Versão do formato — permite migrar sem perder cofres existentes. */
-  readonly v: 1;
+  readonly v: 2;
   readonly kdf: 'pbkdf2-sha256';
   readonly iterations: number;
   /** base64 */
@@ -62,6 +62,27 @@ export interface VaultBlob {
   readonly data: string;
   /** Público e não secreto: identifica a carteira sem revelá-la. */
   readonly fingerprint: string;
+  /**
+   * Descriptor CT watch-only, **em claro**.
+   *
+   * A escolha merece justificativa, porque à primeira vista contraria o resto
+   * do módulo. Ele fica legível para que a carteira possa gerar endereço de
+   * recebimento sem pedir o PIN — cobrar o PIN para receber dinheiro é o tipo
+   * de atrito que faz as pessoas abandonarem a carteira.
+   *
+   * O que se perde: quem ler o armazenamento local **vê** saldos e histórico
+   * desta carteira. Não é novidade — o servidor já guarda o mesmo descriptor
+   * (cifrado em repouso) exatamente por isso, e o trade-off está declarado em
+   * SECURITY.md §2.
+   *
+   * O que **não** se perde: o descriptor não gasta. Assinar continua exigindo
+   * a frase, que continua exigindo o PIN.
+   *
+   * E a alternativa era pior: pedir o endereço ao servidor deixaria um
+   * servidor comprometido redirecionar depósitos para a carteira dele. O
+   * endereço de recebimento tem de vir da chave do próprio usuário.
+   */
+  readonly ctDescriptor: string;
   readonly network: 'mainnet' | 'testnet';
   readonly createdAt: string;
 }
@@ -115,6 +136,7 @@ export interface SealParams {
   readonly mnemonic: string;
   readonly pin: string;
   readonly fingerprint: string;
+  readonly ctDescriptor: string;
   readonly network: 'mainnet' | 'testnet';
   readonly now?: Date;
 }
@@ -134,13 +156,14 @@ export async function sealVault(params: SealParams): Promise<VaultBlob> {
   );
 
   return {
-    v: 1,
+    v: 2,
     kdf: 'pbkdf2-sha256',
     iterations: PBKDF2_ITERATIONS,
     salt: b64(salt),
     iv: b64(iv),
     data: b64(data),
     fingerprint: params.fingerprint,
+    ctDescriptor: params.ctDescriptor,
     network: params.network,
     createdAt: (params.now ?? new Date()).toISOString(),
   };
@@ -154,7 +177,7 @@ export async function sealVault(params: SealParams): Promise<VaultBlob> {
  * que ele devolva outra frase.
  */
 export async function openVault(blob: VaultBlob, pin: string): Promise<string> {
-  if (blob.v !== 1 || blob.kdf !== 'pbkdf2-sha256') {
+  if (blob.v !== 2 || blob.kdf !== 'pbkdf2-sha256') {
     throw new DomainError(
       'unsupported_vault',
       'O cofre local está num formato que esta versão não reconhece. ' +
@@ -192,6 +215,7 @@ export async function changePin(
     mnemonic,
     pin: newPin,
     fingerprint: blob.fingerprint,
+    ctDescriptor: blob.ctDescriptor,
     network: blob.network,
   });
 }
@@ -215,13 +239,14 @@ export function isVaultBlob(value: unknown): value is VaultBlob {
   if (typeof value !== 'object' || value === null) return false;
   const v = value as Record<string, unknown>;
   return (
-    v['v'] === 1 &&
+    v['v'] === 2 &&
     typeof v['kdf'] === 'string' &&
     typeof v['iterations'] === 'number' &&
     typeof v['salt'] === 'string' &&
     typeof v['iv'] === 'string' &&
     typeof v['data'] === 'string' &&
     typeof v['fingerprint'] === 'string' &&
+    typeof v['ctDescriptor'] === 'string' &&
     (v['network'] === 'mainnet' || v['network'] === 'testnet')
   );
 }

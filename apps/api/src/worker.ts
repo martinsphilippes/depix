@@ -17,6 +17,7 @@ import {
   QUEUES,
   createConfirmationHandler,
   createWebhookHandler,
+  runReconciliation,
   startWorker,
   type WorkerHandle,
 } from '@depix/app';
@@ -62,9 +63,46 @@ export async function startWorkers(): Promise<{ stop: () => Promise<void> }> {
 
   log(`filas ativas: ${QUEUES.webhook}, ${QUEUES.confirm}`);
 
+  // --- Conciliação periódica (§14) -------------------------------------------
+  //
+  // Não é fila: não há job a enfileirar, é uma varredura no relógio. E não é
+  // conferência opcional — com o Firestore, a conciliação **é** o mecanismo
+  // que detecta escrita feita por fora do ledger, porque não há trigger que a
+  // impeça. Uma conciliação que não roda transforma "o saldo vem do ledger"
+  // de garantia em esperança.
+  const reconcileEvery = Number(process.env['RECONCILE_INTERVAL_MS'] ?? 15 * 60 * 1000);
+  let reconciling = false;
+
+  const reconcileTimer = setInterval(() => {
+    // Guarda contra sobreposição: uma rodada lenta não deve disparar a
+    // seguinte por cima dela.
+    if (reconciling) return;
+    reconciling = true;
+
+    void runReconciliation(db, { trigger: 'scheduled' })
+      .then((r) => {
+        // Registra também quando está tudo certo: saber que a conciliação
+        // rodou e não achou nada é diferente de não ter notícia dela.
+        log(
+          r.clean
+            ? `conciliação ${r.runId}: ${r.accountsChecked} contas, sem divergência`
+            : `conciliação ${r.runId}: DIVERGÊNCIAS ${JSON.stringify(r.findings)}`,
+        );
+      })
+      .catch((err: unknown) => log(`falha na conciliação: ${describe(err)}`))
+      .finally(() => {
+        reconciling = false;
+      });
+  }, reconcileEvery);
+
+  // Não segura o processo vivo só por causa do timer.
+  reconcileTimer.unref();
+  log(`conciliação a cada ${Math.round(reconcileEvery / 1000)}s`);
+
   return {
     async stop() {
       log('encerrando…');
+      clearInterval(reconcileTimer);
       await Promise.all(handles.map((h) => h.stop()));
       await db.close();
     },

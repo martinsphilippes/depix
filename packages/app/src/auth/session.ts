@@ -13,7 +13,7 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 
 import { DomainError } from '@depix/core';
-import { COLLECTIONS, type Db, type SessionDoc, type UserDoc, sessionId } from '@depix/firestore';
+import { COLLECTIONS, type Db, type SessionDoc, type UserDoc, sessionId, toDate } from '@depix/firestore';
 
 export const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 dias
 export const REAUTH_WINDOW_MS = 5 * 60 * 1000; // 5 minutos
@@ -167,7 +167,3 @@ export function safeEquals(a: string, b: string): boolean {
   return timingSafeEqual(bufA, bufB);
 }
 
-/** O SDK devolve Timestamp; normaliza para Date. */
-function toDate(value: Date | { toDate(): Date }): Date {
-  return value instanceof Date ? value : value.toDate();
-}

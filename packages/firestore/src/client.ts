@@ -145,3 +145,19 @@ export function isAlreadyExists(err: unknown): boolean {
 export function isAborted(err: unknown): boolean {
   return typeof err === 'object' && err !== null && (err as { code?: number }).code === ABORTED;
 }
+
+/**
+ * Normaliza data lida do Firestore.
+ *
+ * O SDK devolve `Timestamp`, não `Date` — e `Timestamp` não tem `getTime()`.
+ * Passar um direto para código que espera `Date` não dá erro de tipo (os
+ * documentos são declarados com `Date`) e explode em tempo de execução, o
+ * que já aconteceu: a política de segurança quebrava ao comparar a data de
+ * alteração de um contato.
+ *
+ * Esta função existia copiada em oito arquivos. Uma cópia é conveniência;
+ * oito é a garantia de que a nona sairá errada.
+ */
+export function toDate(value: Date | { toDate(): Date }): Date {
+  return value instanceof Date ? value : value.toDate();
+}

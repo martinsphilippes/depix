@@ -387,3 +387,65 @@ export interface ReconciliationEntryDoc {
   resolutionNote: string | null;
   createdAt: Date;
 }
+
+/**
+ * Contato salvo (§29).
+ *
+ * `updatedAt` não é metadado decorativo: a política de segurança recusa
+ * envio de valor alto para contato alterado há pouco (SECURITY.md §8). Trocar
+ * o endereço de um contato conhecido e mandar em seguida é o roteiro do
+ * ataque de quem já tem a sessão, e este campo é o que permite detectá-lo.
+ */
+export interface ContactDoc {
+  userId: string;
+  label: string;
+  kind: 'liquid_address' | 'pix_key';
+  /** Endereço Liquid ou chave Pix. Nunca é exibido sem o rótulo ao lado. */
+  destination: string;
+  /** Quantas vezes o usuário já enviou para cá — alimenta a UI, não a política. */
+  timesUsed: number;
+  lastUsedAt: Date | null;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+/**
+ * Notificação (§30).
+ *
+ * Guardada no servidor em vez de empurrada por push: push exigiria um
+ * identificador de dispositivo por usuário, e §18 pede o mínimo de dados.
+ * O aplicativo busca; o servidor não precisa saber onde o usuário está.
+ */
+export interface NotificationDoc {
+  userId: string;
+  kind:
+    | 'deposit_confirmed'
+    | 'send_confirmed'
+    | 'send_failed'
+    | 'deposit_expired'
+    | 'security_alert';
+  title: string;
+  body: string;
+  transactionId: string | null;
+  readAt: Date | null;
+  createdAt: Date;
+}
+
+/**
+ * Execução de conciliação (§14).
+ *
+ * Cada rodada é registrada, inclusive as que não acham nada — saber que a
+ * conciliação **rodou** e não encontrou divergência é informação diferente de
+ * não ter notícia dela.
+ */
+export interface ReconciliationRunDoc {
+  startedAt: Date;
+  finishedAt: Date | null;
+  trigger: 'scheduled' | 'manual';
+  /** Contagem por tipo de divergência encontrada nesta rodada. */
+  findings: Record<string, number>;
+  accountsChecked: number;
+  transactionsChecked: number;
+  status: 'running' | 'completed' | 'failed';
+  error: string | null;
+}

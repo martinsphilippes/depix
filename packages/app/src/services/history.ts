@@ -21,6 +21,7 @@ import {
   type PixTransactionDoc,
   type TransactionDoc,
   asNumberOrNull,
+  toDate,
 } from '@depix/firestore';
 
 export type HistoryDirection = 'in' | 'out';
@@ -224,6 +225,3 @@ export function forDisplay(
   return rest;
 }
 
-function toDate(value: Date | { toDate(): Date }): Date {
-  return value instanceof Date ? value : value.toDate();
-}
