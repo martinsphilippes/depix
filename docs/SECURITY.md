@@ -162,6 +162,32 @@ Bloqueio por conta **e** por IP — bloquear só por IP não protege contra botn
 
 ---
 
+## 4.1 Leitura de QR
+
+A câmera é lida com a `BarcodeDetector` do próprio navegador, sem biblioteca de terceiros. Não é economia de bytes: uma dependência de decodificação roda sobre os quadros da câmera, na mesma origem que segura a seed durante a assinatura. Cada dependência nesse caminho é código externo com acesso à imagem e ao `window` — a CSP proíbe script externo justamente por isso, e importar um decodificador via bundle contornaria a proibição sem removê-la do modelo de ameaças.
+
+O preço é que Safari e Firefox de desktop não têm a API. Onde ela falta, o botão não aparece e o campo de colar continua ali. Uma câmera que não abre é bem menos grave do que um endereço lido errado.
+
+O texto lido **nunca** vira destino automaticamente sem classificação: `classifyScan` reconhece o que tem forma clara e devolve `unknown` para o resto, e a tela mostra o resultado para conferência. O endereço ainda passa pela validação de rede em `parseAddress` antes de virar transação.
+
+---
+
+## 4.2 Painel administrativo
+
+| Regra | Como é feita valer |
+|---|---|
+| Ser admin é documento, não flag | Coleção `adminUsers` separada — um campo `isAdmin` em `users` seria alterável por qualquer caminho que já escreva no usuário |
+| Não há rota para promover a admin | O primeiro nasce por `npm run bootstrap -- admin <userId>`, que exige acesso ao ambiente. Uma rota dessas é o alvo que um atacante com sessão procura |
+| Toda ação exige motivo | `writeAuditLog` lança em `actorKind: 'admin'` sem `reason` — erro em tempo de execução, não convenção de revisão |
+| `auditor` lê, `operator` age | Papéis separados: consultar não deveria custar o mesmo poder que agir |
+| Nada de dado pessoal | Não por política de acesso: porque não existe. Não coletamos identidade (§18), então o painel mostra identificador opaco, saldo e estado |
+| Não existe "corrigir saldo" | Ajuste é lançamento no ledger, com contrapartida e idempotência. Um botão desses seria crédito sem lastro com outro nome (§43) |
+| Fechar divergência exige explicar | "Resolvido" sem nota é indistinguível de "alguém apertou o botão para a lista parar de incomodar" |
+
+O filtro que impede segredo na trilha (`seed`, `mnemonic`, `privateKey`, `token`, `cpf`…) casa camelCase e snake_case. A primeira versão listava só `private_key` e deixava `privateKey` passar — o teste pegou.
+
+---
+
 ## 5. Integridade das integrações
 
 ### Webhooks

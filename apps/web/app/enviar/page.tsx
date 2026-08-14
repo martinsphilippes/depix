@@ -18,14 +18,15 @@
  */
 
 import Link from 'next/link';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 
 import { parseUserAmount, rescale } from '@depix/core/browser';
 import type { SendStage } from '@depix/wallet';
 
-import { ApiRequestError, type PixKeyPreview, type SendReview, api } from '../../lib/api';
+import { ApiRequestError, type Contact, type PixKeyPreview, type SendReview, api } from '../../lib/api';
 import { STAGE_LABEL, hasWallet, signAndSend } from '../../lib/device-wallet';
 import { PasskeyCancelled, reauth } from '../../lib/passkey';
+import { QrScanButton, QrScanner } from '../../components/QrScanner';
 
 type Modo = 'escolha' | 'pix' | 'carteira';
 
@@ -182,7 +183,14 @@ function EnviarCarteira() {
   const [error, setError] = useState<string | null>(null);
   /** Motivo dado pela política quando ela pede confirmação de identidade. */
   const [precisaConfirmar, setPrecisaConfirmar] = useState<string | null>(null);
+  const [contatos, setContatos] = useState<Contact[]>([]);
+  const [lendoQr, setLendoQr] = useState(false);
+  const [salvarComo, setSalvarComo] = useState('');
   const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    api.contacts().then((r) => setContatos(r.contacts)).catch(() => setContatos([]));
+  }, []);
 
   async function revisar(e: React.FormEvent) {
     e.preventDefault();
@@ -317,6 +325,40 @@ function EnviarCarteira() {
           Liquid confirmar — normalmente em cerca de um minuto.
         </div>
 
+        {/* Oferecer salvar depois do envio, e não antes: é aqui que o usuário
+            sabe que o endereço estava certo. */}
+        {!contatos.some((c) => c.destination === review?.destination) && (
+          <div className="card">
+            <div className="field">
+              <label htmlFor="salvar">Salvar este destino na agenda</label>
+              <input
+                id="salvar"
+                placeholder="Ex.: Maria"
+                value={salvarComo}
+                onChange={(e) => setSalvarComo(e.target.value)}
+              />
+            </div>
+            <button
+              type="button"
+              className="btn btn-secondary"
+              disabled={!salvarComo.trim() || busy}
+              onClick={() => {
+                setBusy(true);
+                void api
+                  .saveContact(salvarComo.trim(), review!.destination)
+                  .then((c) => {
+                    setContatos((atuais) => [...atuais, c]);
+                    setSalvarComo('');
+                  })
+                  .catch(() => undefined)
+                  .finally(() => setBusy(false));
+              }}
+            >
+              Salvar contato
+            </button>
+          </div>
+        )}
+
         <Link href="/" className="btn" style={{ display: 'block', textAlign: 'center' }}>
           Voltar ao início
         </Link>
@@ -418,8 +460,61 @@ function EnviarCarteira() {
     );
   }
 
+  if (lendoQr) {
+    return (
+      <QrScanner
+        onScan={(lido) => {
+          setLendoQr(false);
+          if (lido.kind === 'liquid_address') {
+            setAddress(lido.value);
+            setError(null);
+          } else {
+            // Não preenche com o que não reconheceu: encher o campo de
+            // destino com texto não conferido é pior do que não ler nada.
+            setError(
+              lido.kind === 'pix'
+                ? 'Este é um QR de Pix, não um endereço de carteira. Use "Enviar Pix".'
+                : 'Não reconheci este código como endereço Liquid.',
+            );
+          }
+        }}
+        onClose={() => setLendoQr(false)}
+      />
+    );
+  }
+
   return (
     <form onSubmit={revisar}>
+      {contatos.length > 0 && (
+        <div className="field">
+          <label htmlFor="contato">Contato salvo</label>
+          <select
+            id="contato"
+            value=""
+            onChange={(e) => {
+              const escolhido = contatos.find((c) => c.id === e.target.value);
+              if (escolhido) setAddress(escolhido.destination);
+            }}
+            style={{
+              width: '100%',
+              padding: 12,
+              borderRadius: 10,
+              border: '1px solid var(--border)',
+              background: 'var(--bg)',
+              color: 'var(--text)',
+              font: 'inherit',
+            }}
+          >
+            <option value="">Escolher da agenda…</option>
+            {contatos.map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.label}
+              </option>
+            ))}
+          </select>
+        </div>
+      )}
+
       <div className="field">
         <label htmlFor="dest">Endereço de destino</label>
         <input
@@ -429,6 +524,9 @@ function EnviarCarteira() {
           onChange={(e) => setAddress(e.target.value)}
           autoFocus
         />
+        <div style={{ marginTop: 8 }}>
+          <QrScanButton onClick={() => setLendoQr(true)} />
+        </div>
       </div>
 
       <div className="field">

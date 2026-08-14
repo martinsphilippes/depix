@@ -5,7 +5,7 @@ import { DEPIX_LIQUID_ASSET_ID, money } from '@depix/core';
 import { createTestDb, seedUser, type TestDb } from '@depix/firestore';
 import { creditAvailable } from '@depix/ledger';
 import { SandboxDepixProvider, signDepixWebhook } from '@depix/providers';
-import { createSession } from '@depix/app';
+import { createSession, grantAdmin } from '@depix/app';
 
 import { generateEncryptionKey } from '@depix/app';
 
@@ -171,6 +171,131 @@ describe('CORS', () => {
 
     assert.notEqual(r.headers['access-control-allow-origin'], 'https://carteira-falsa.example');
     assert.notEqual(r.headers['access-control-allow-origin'], '*');
+  });
+});
+
+describe('contatos, avisos e painel pela API', () => {
+  it('salva um contato e o encontra na lista', async () => {
+    const r = await app.inject({
+      method: 'POST',
+      url: '/contacts',
+      headers: auth(),
+      payload: { label: 'Maria', destination: 'lq1qq-maria-endereco' },
+    });
+
+    assert.equal(r.statusCode, 201);
+    assert.equal(r.json().label, 'Maria');
+
+    const lista = await app.inject({ method: 'GET', url: '/contacts', headers: auth() });
+    assert.ok(lista.json().contacts.some((c: { label: string }) => c.label === 'Maria'));
+  });
+
+  it('trocar o endereço de um contato exige confirmação recente', async () => {
+    // Não é burocracia: é o passo do ataque em que alguém com a sessão
+    // redireciona pagamentos futuros contando com a vítima conferir só o nome.
+    const { token: staleToken } = await createSession(db, { userId, freshAuth: false });
+
+    const criado = await app.inject({
+      method: 'POST',
+      url: '/contacts',
+      headers: auth(),
+      payload: { label: 'Fornecedor', destination: 'lq1qq-fornecedor' },
+    });
+
+    const r = await app.inject({
+      method: 'POST',
+      url: `/contacts/${encodeURIComponent(criado.json().id)}/destination`,
+      headers: { authorization: `Bearer ${staleToken}` },
+      payload: { destination: 'lq1qq-endereco-do-atacante' },
+    });
+
+    assert.equal(r.statusCode, 403);
+    assert.equal(r.json().error.code, 'reauth_required');
+  });
+
+  it('lista avisos e o contador de não lidos', async () => {
+    const r = await app.inject({ method: 'GET', url: '/notifications', headers: auth() });
+    assert.equal(r.statusCode, 200);
+    assert.equal(typeof r.json().unread, 'number');
+    assert.ok(Array.isArray(r.json().items));
+  });
+
+  it('o painel responde 403 para quem não é admin', async () => {
+    // O teste que importa: as rotas do painel existem para todo mundo, e o
+    // que separa é a verificação — não a obscuridade da URL.
+    for (const url of ['/admin/me', '/admin/reconciliation', '/admin/review', '/admin/audit']) {
+      const r = await app.inject({ method: 'GET', url, headers: auth() });
+      assert.equal(r.statusCode, 403, `${url} não barrou não-admin`);
+      assert.equal(r.json().error.code, 'not_admin');
+    }
+  });
+
+  it('admin de auditoria lê mas não age', async () => {
+    await grantAdmin(db, {
+      userId,
+      role: 'auditor',
+      grantedBy: 'teste',
+      reason: 'suíte automatizada',
+    });
+
+    const leitura = await app.inject({ method: 'GET', url: '/admin/reconciliation', headers: auth() });
+    assert.equal(leitura.statusCode, 200);
+
+    const acao = await app.inject({
+      method: 'POST',
+      url: '/admin/reconciliation/run',
+      headers: auth(),
+    });
+    assert.equal(acao.statusCode, 403);
+    assert.equal(acao.json().error.code, 'insufficient_role');
+  });
+
+  it('operador roda a conciliação e a trilha registra', async () => {
+    await grantAdmin(db, {
+      userId,
+      role: 'operator',
+      grantedBy: 'teste',
+      reason: 'suíte automatizada',
+    });
+
+    const r = await app.inject({
+      method: 'POST',
+      url: '/admin/reconciliation/run',
+      headers: auth(),
+    });
+    assert.equal(r.statusCode, 200);
+    assert.ok(r.json().runId);
+
+    const auditoria = await app.inject({ method: 'GET', url: '/admin/audit', headers: auth() });
+    assert.equal(auditoria.statusCode, 200);
+    assert.ok(
+      auditoria.json().items.some((l: { action: string }) => l.action === 'admin.granted'),
+      'a concessão de admin não virou trilha',
+    );
+  });
+
+  it('mudar status de usuário sem motivo é recusado', async () => {
+    // Um painel que deixa agir sem dizer por quê produz uma trilha que não
+    // serve para auditar nada.
+    const r = await app.inject({
+      method: 'POST',
+      url: `/admin/users/${userId}/status`,
+      headers: auth(),
+      payload: { status: 'suspended' },
+    });
+
+    assert.equal(r.statusCode, 400);
+    assert.equal(r.json().error.code, 'reason_required');
+  });
+
+  it('nenhum bigint atravessa as rotas novas', async () => {
+    // `useBigInt` faz contadores voltarem como bigint, e JSON.stringify lança
+    // neles. O teste existe porque o erro é de tempo de execução, não de tipo.
+    for (const url of ['/admin/reconciliation', '/notifications', '/contacts']) {
+      const r = await app.inject({ method: 'GET', url, headers: auth() });
+      assert.equal(r.statusCode, 200, url);
+      assert.doesNotThrow(() => JSON.stringify(r.json()), `bigint vazou em ${url}`);
+    }
   });
 });
 

@@ -21,10 +21,15 @@ export default function Dashboard() {
   const [error, setError] = useState<string | null>(null);
   const [semSessao, setSemSessao] = useState(false);
   const [semCarteira, setSemCarteira] = useState(false);
+  const [naoLidos, setNaoLidos] = useState(0);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     setSemCarteira(!hasWallet());
+
+    // Falha em silêncio: um contador de avisos indisponível não deve
+    // atrapalhar quem só quer ver o saldo.
+    api.notifications().then((r) => setNaoLidos(r.unread)).catch(() => undefined);
 
     Promise.all([api.balance(), api.history()])
       .then(([b, h]) => {
@@ -64,7 +69,36 @@ export default function Dashboard() {
     <>
       <header className="topbar">
         <span className="brand">Carteira</span>
-        <span className="env-badge">Sandbox</span>
+        <span style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <Link
+            href="/avisos"
+            aria-label={naoLidos > 0 ? `${naoLidos} avisos não lidos` : 'Avisos'}
+            style={{ position: 'relative', textDecoration: 'none', fontSize: 18 }}
+          >
+            <span aria-hidden>◔</span>
+            {naoLidos > 0 && (
+              <span
+                style={{
+                  position: 'absolute',
+                  top: -4,
+                  right: -8,
+                  minWidth: 16,
+                  height: 16,
+                  padding: '0 4px',
+                  borderRadius: 999,
+                  background: 'var(--accent)',
+                  color: '#fff',
+                  fontSize: 10,
+                  lineHeight: '16px',
+                  textAlign: 'center',
+                }}
+              >
+                {naoLidos > 9 ? '9+' : naoLidos}
+              </span>
+            )}
+          </Link>
+          <span className="env-badge">Sandbox</span>
+        </span>
       </header>
 
       <section>

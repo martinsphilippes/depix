@@ -2,11 +2,11 @@
 
 Carteira em reais para o usuário final. Por baixo: DePix na Liquid Network, autocustódia e rampa fiat via operador autorizado.
 
-> **Estado: ETAPA 2 concluída; ETAPA 3 em andamento.** Núcleo financeiro, banco, ledger, adapters, workers, carteira com assinatura no dispositivo, API e interface.
+> **Estado: ETAPA 2 concluída; ETAPA 3 em andamento.** Núcleo financeiro, banco, ledger, adapters, workers, carteira com assinatura no dispositivo, API, interface, conciliação automática e painel administrativo.
 > **Nenhum fundo real é movimentado.** A aplicação recusa subir em produção sem liberação explícita.
 
 ```
-293 testes · 293 passando · 0 pulados
+373 testes · 373 passando · 1 suíte opt-in (rede real)
 ```
 
 **Banco: Cloud Firestore.** A migração do PostgreSQL mudou o modelo de
@@ -25,6 +25,7 @@ npm test                      # sobe o emulador do Firestore e roda tudo
 # desenvolvimento (dois terminais)
 npm run emulator                      # Firestore → localhost:8080
 npm run bootstrap                     # ativos, contas de sistema, providers
+npm run bootstrap -- admin <userId>   # concede acesso ao painel (não há rota HTTP para isso)
 npm run dev --workspace=@depix/api    # API      → localhost:3001
 npm run worker                        # worker das filas
 npm run dev --workspace=@depix/web    # UI       → localhost:3000
@@ -48,6 +49,8 @@ emulador exige.
 | `packages/app` | Autenticação, fluxos de negócio, extrato, webhooks, workers |
 | `apps/api` | HTTP (Fastify), gate de ambiente, processo do worker |
 | `apps/web` | Interface (Next.js) |
+
+Telas: entrar, carteira (criar/restaurar com backup conferido), início, receber, enviar, extrato, contatos, avisos, ajustes e painel.
 
 ---
 
@@ -73,11 +76,17 @@ emulador exige.
 
 **Verificação de webhook recebe `Buffer`, não objeto.** Reserializar o JSON antes de conferir a assinatura é o erro clássico da integração; a assinatura do tipo torna esse erro impossível de cometer por descuido, e há teste de regressão provando que o corpo reserializado é rejeitado.
 
+**O envio já rodou contra a rede de verdade.** Uma transação real foi montada, assinada e transmitida na Liquid testnet pelo mesmo `executeSend` que a tela chama, e o destinatário recebeu o valor exato. O teste está em `packages/wallet/test/testnet.integration.test.ts`, opt-in por `LIQUID_TESTNET_E2E=yes` — depende de faucet e de rede externa, e uma suíte instável é uma suíte que as pessoas aprendem a ignorar. Sem a variável ele reporta SKIP com o motivo, nunca passa em silêncio.
+
 **A transação sai do dispositivo direto para a rede.** O envio é: destravar o cofre → sincronizar UTXOs → montar → validar → assinar → conferir → transmitir → só então avisar o servidor. A ordem é código, não disciplina de quem escreve a tela, e há teste que injeta uma falha de rede e prova que nada foi assinado antes da sincronização. O servidor fica sabendo do envio **depois**, pelo txid; se essa chamada falhar, o dinheiro já andou e a tela diz isso em vez de fingir que o envio não aconteceu.
 
 **A frase de recuperação fica cifrada em repouso, com uma chave que não existe em lugar nenhum.** PBKDF2-SHA256 de 600 mil iterações sobre o PIN do usuário, AES-256-GCM, e a chave derivada é `extractable: false`. O que garante: quem copiar o `localStorage` não tem a frase. O que **não** garante, e está escrito no módulo: proteção contra código malicioso rodando na página enquanto o cofre está aberto — nesse instante a chave está em memória, porque assinar exige a chave. Daí a CSP e a regra de descartar o signer no `finally`. Há teste que serializa o cofre e falha se qualquer uma das 12 palavras aparecer.
 
 **A passkey é o único fator, e não há senha nenhuma.** Sem senha não há o que phishar, reusar ou vazar do servidor: o banco guarda chave pública, ID e contador — material inútil para quem o roubar. O challenge é de uso único e consumido **antes** da verificação, inclusive quando ela falha, então uma assinatura capturada não vira login. Contador que retrocede é credencial clonada e a autenticação é recusada com registro em auditoria. O preço, assumido: perder todos os autenticadores é perder a conta — não há e-mail de recuperação porque não coletamos e-mail. O dinheiro é separado desse risco pelo backup de 12 palavras, e a API recusa apagar a última passkey. Os testes usam um autenticador ECDSA P-256 de software real, verificado pela mesma biblioteca de produção — inclusive o teste que simula phishing assinando de outra origem.
+
+**A conciliação roda sozinha, e isso não é zelo.** No PostgreSQL um gatilho tornava impossível a projeção de saldo divergir dos lançamentos. O Firestore não tem gatilho, então a garantia deixou de ser prevenção e virou detecção — e uma detecção que não roda transforma "o saldo vem do ledger" em esperança. O worker concilia a cada 15 minutos e **registra a rodada mesmo quando não acha nada**: saber que a verificação rodou e estava tudo certo é diferente de não ter notícia dela. Nenhuma divergência é corrigida automaticamente; vira achado aberto, e fechá-lo exige escrever o que foi verificado.
+
+**Trocar o endereço de um contato pede passkey; renomear, não.** A distinção é o ponto inteiro. Trocar o endereço de um contato conhecido e mandar em seguida é o roteiro do ataque de quem já tomou a sessão — a vítima confere o nome, não os 100 caracteres. Mas se corrigir uma digitação também pedisse confirmação, o usuário aprenderia a clicar sem ler, que é justamente o hábito que o aviso deveria quebrar.
 
 **Os controles estão no caminho da requisição, não só no repositório.** Rate limiting (por conta e por IP, com modo de força bruta e modo de throttling), reautenticação para operação sensível, e limites por usuário verificados **dentro do serviço** — não na rota, porque limite checado só no handler HTTP deixa de valer para worker e reprocessamento. Há testes que provam a fiação pela API, não pelo módulo.
 
@@ -91,7 +100,7 @@ emulador exige.
 |---|---|---|
 | **Pix → DePix** | 🟡 sandbox funcionando; produção requer aprovação | `packages/app/src/services/deposit.ts` |
 | **DePix → Pix** | 🟡 cotação, construção da transação e guard prontos; falta credencial do operador | `packages/wallet/src/transactions.ts` |
-| **DePix → DePix (Liquid)** | 🟢 fluxo completo ponta a ponta: tela → cofre → assinatura no dispositivo → transmissão | `packages/wallet/`, `apps/web/app/enviar/` |
+| **DePix → DePix (Liquid)** | 🟢 completo e **provado na testnet**: tela → cofre → assinatura no dispositivo → transmissão | `packages/wallet/`, `apps/web/app/enviar/` |
 | **DePix → DePix (Lightning)** | 🔴 indisponível | `packages/providers/src/lightning/unavailable.ts` |
 
 Justificativa de cada classificação em [ARCHITECTURE.md](docs/ARCHITECTURE.md).
@@ -107,7 +116,7 @@ Nenhuma dessas lacunas é simulada. Todas lançam `IntegrationPendingError` expl
 | **Consulta DICT** (nome do dono da chave Pix) | A tela de envio não mostra o nome do recebedor. Mitigação: endereço de estorno sempre preenchido + confirmação explícita da chave |
 | **Lightning para DePix** | Cadeias e protocolos diferentes, sem ponte. Botão presente e desabilitado, com o motivo |
 | **Contrato de depósito do operador** | Mapeamento isolado em `mapDeposit*`, marcado para verificação em sandbox antes de qualquer uso real |
-| **Transação com fundos reais** | O caminho completo está ligado, mas nunca rodou contra uma carteira com saldo na testnet. Até isso acontecer, "funciona" é afirmação sobre o código, não sobre a rede |
+| **Leitura de QR no Safari e no Firefox de desktop** | Usamos a `BarcodeDetector` do navegador em vez de uma biblioteca de terceiros — código externo lendo os quadros da câmera, na mesma origem que segura a seed, não vale a conveniência. Onde ela falta, o botão não aparece e o campo de colar continua ali |
 
 ---
 

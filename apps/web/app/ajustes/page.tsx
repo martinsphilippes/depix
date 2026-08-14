@@ -17,11 +17,14 @@ export default function Ajustes() {
   const [advanced, setAdvanced] = useState(false);
   const [lightning, setLightning] = useState<LightningStatus | null>(null);
   const [carteira, setCarteira] = useState<ReturnType<typeof loadVault>>(null);
+  const [admin, setAdmin] = useState(false);
 
   useEffect(() => {
     setAdvanced(localStorage.getItem('advancedMode') === 'true');
     setCarteira(loadVault());
     api.lightningStatus().then(setLightning).catch(() => setLightning(null));
+    // 403 para quem não é admin: o atalho simplesmente não aparece.
+    api.adminMe().then(() => setAdmin(true)).catch(() => setAdmin(false));
   }, []);
 
   function toggle() {
@@ -114,6 +117,33 @@ export default function Ajustes() {
           dispositivo. Como só você a tem, ninguém — nem nós — consegue recuperá-la por você.
         </div>
       )}
+
+      <div className="section-title">Mais</div>
+      <div className="actions" style={{ gridTemplateColumns: '1fr' }}>
+        <Link href="/contatos" className="action">
+          <span className="action-icon" aria-hidden>
+            ☰
+          </span>
+          Contatos
+          <span className="action-hint">Endereços salvos com nome</span>
+        </Link>
+        <Link href="/avisos" className="action">
+          <span className="action-icon" aria-hidden>
+            ◔
+          </span>
+          Avisos
+          <span className="action-hint">O que aconteceu com o seu dinheiro</span>
+        </Link>
+        {admin && (
+          <Link href="/admin" className="action">
+            <span className="action-icon" aria-hidden>
+              ⚑
+            </span>
+            Painel
+            <span className="action-hint">Conciliação e revisão</span>
+          </Link>
+        )}
+      </div>
 
       <div className="section-title">Redes</div>
       <div className="card">

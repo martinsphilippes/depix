@@ -140,6 +140,26 @@ export interface LimitsSummary {
   reauthAvailable: boolean;
 }
 
+export interface Contact {
+  id: string;
+  label: string;
+  kind: 'liquid_address' | 'pix_key';
+  destination: string;
+  timesUsed: number;
+  lastUsedAt: string | null;
+  updatedAt: string;
+}
+
+export interface AppNotification {
+  id: string;
+  kind: string;
+  title: string;
+  body: string;
+  transactionId: string | null;
+  read: boolean;
+  createdAt: string;
+}
+
 export interface BroadcastAck {
   transactionId: string;
   txid: string;
@@ -196,8 +216,104 @@ export const api = {
 
   limits: () => request<LimitsSummary>('/wallet/limits'),
 
+  // --- Contatos -------------------------------------------------------------
+  contacts: () => request<{ contacts: Contact[] }>('/contacts'),
+
+  saveContact: (label: string, destination: string, kind: Contact['kind'] = 'liquid_address') =>
+    request<Contact>('/contacts', {
+      method: 'POST',
+      body: JSON.stringify({ label, destination, kind }),
+    }),
+
+  changeContactDestination: (id: string, destination: string) =>
+    request<Contact>(`/contacts/${encodeURIComponent(id)}/destination`, {
+      method: 'POST',
+      body: JSON.stringify({ destination }),
+    }),
+
+  deleteContact: (id: string) =>
+    request<{ removed: boolean }>(`/contacts/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+
+  // --- Notificações ---------------------------------------------------------
+  notifications: () =>
+    request<{ unread: number; items: AppNotification[] }>('/notifications'),
+
+  markNotificationRead: (id: string) =>
+    request<{ read: boolean }>(`/notifications/${encodeURIComponent(id)}/read`, {
+      method: 'POST',
+    }),
+
+  markAllNotificationsRead: () =>
+    request<{ marked: number }>('/notifications/read-all', { method: 'POST' }),
+
   history: (period?: string) =>
     request<{ items: HistoryItem[] }>(`/history${period ? `?period=${period}` : ''}`),
 
   lightningStatus: () => request<LightningStatus>('/lightning/status'),
+
+  // --- Painel administrativo ------------------------------------------------
+  // Todas as rotas respondem 403 para quem não é admin; a interface usa
+  // `adminMe` para decidir se sequer mostra o painel.
+  adminMe: () => request<{ userId: string; role: 'operator' | 'auditor' }>('/admin/me'),
+
+  adminReconciliation: () =>
+    request<{
+      openFindings: {
+        id: string;
+        kind: string;
+        transactionId: string | null;
+        expected: Record<string, unknown> | null;
+        observed: Record<string, unknown> | null;
+        createdAt: string;
+      }[];
+      runs: {
+        id: string;
+        trigger: string;
+        status: string;
+        findings: Record<string, number>;
+        accountsChecked: number;
+        transactionsChecked: number;
+        startedAt: string;
+        finishedAt: string | null;
+        error: string | null;
+      }[];
+    }>('/admin/reconciliation'),
+
+  adminRunReconciliation: () =>
+    request<{ runId: string; clean: boolean; findings: Record<string, number> }>(
+      '/admin/reconciliation/run',
+      { method: 'POST' },
+    ),
+
+  adminResolveFinding: (id: string, note: string) =>
+    request<{ resolved: boolean }>(`/admin/reconciliation/${encodeURIComponent(id)}/resolve`, {
+      method: 'POST',
+      body: JSON.stringify({ note }),
+    }),
+
+  adminReview: () =>
+    request<{
+      items: {
+        id: string;
+        userId: string;
+        kind: string;
+        status: string;
+        amount: string;
+        createdAt: string;
+      }[];
+    }>('/admin/review'),
+
+  adminAudit: (objectId?: string) =>
+    request<{
+      items: {
+        id: string;
+        actorKind: string;
+        actorId: string | null;
+        action: string;
+        objectKind: string | null;
+        objectId: string | null;
+        reason: string | null;
+        createdAt: string;
+      }[];
+    }>(`/admin/audit${objectId ? `?objectId=${encodeURIComponent(objectId)}` : ''}`),
 };

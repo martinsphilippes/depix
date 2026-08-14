@@ -2,8 +2,9 @@
 /**
  * CLI de bootstrap.
  *
- *   npm run bootstrap            # cria ativos, contas de sistema, providers
- *   npm run bootstrap -- check   # só verifica, não escreve
+ *   npm run bootstrap                        # ativos, contas de sistema, providers
+ *   npm run bootstrap -- check               # só verifica, não escreve
+ *   npm run bootstrap -- admin <userId> [papel]   # concede acesso ao painel
  *
  * Substitui o `migrate` da versão PostgreSQL. O Firestore não tem schema
  * declarado nem migração de DDL — o que precisa existir antes de qualquer
@@ -55,6 +56,53 @@ async function main(): Promise<void> {
       console.log(`ativos:            ${assets.data().count}`);
       console.log(`contas contábeis:  ${accounts.data().count}`);
       console.log(`providers:         ${providers.data().count}`);
+      return;
+    }
+
+    if (command === 'admin') {
+      // Conceder acesso administrativo é operação de console, não de HTTP.
+      // Uma rota de "promover a admin" é o alvo que um atacante com sessão
+      // procura — aqui exige-se acesso ao ambiente, que é uma barreira de
+      // outra natureza.
+      const userId = process.argv[3];
+      const papel = process.argv[4] ?? 'operator';
+
+      if (!userId) {
+        console.error('uso: npm run bootstrap -- admin <userId> [operator|auditor]');
+        process.exit(1);
+      }
+      if (papel !== 'operator' && papel !== 'auditor') {
+        console.error(`papel inválido: ${papel}. Use "operator" ou "auditor".`);
+        process.exit(1);
+      }
+
+      const usuario = await db.doc(`${COLLECTIONS.users}/${userId}`).get();
+      if (!usuario.exists) {
+        // Sem esta checagem, um erro de digitação criaria um admin para um
+        // usuário que não existe — e ninguém notaria até alguém criar a conta
+        // com aquele ID.
+        console.error(`usuário "${userId}" não existe. Nada foi gravado.`);
+        process.exit(1);
+      }
+
+      await db.doc(`${COLLECTIONS.adminUsers}/${userId}`).set({
+        role: papel,
+        addedBy: 'cli',
+        createdAt: new Date(),
+      });
+      await db.collection(COLLECTIONS.auditLogs).add({
+        actorKind: 'admin',
+        actorId: 'cli',
+        action: 'admin.granted',
+        objectKind: 'user',
+        objectId: userId,
+        reason: 'concedido por console de operação',
+        metadata: { role: papel },
+        ipHash: null,
+        createdAt: new Date(),
+      });
+
+      console.log(`acesso "${papel}" concedido a ${userId}`);
       return;
     }
 
