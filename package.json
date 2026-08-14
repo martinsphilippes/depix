@@ -24,7 +24,8 @@
     "test:testnet": "LIQUID_TESTNET_E2E=yes node --test --experimental-strip-types packages/wallet/test/testnet.integration.test.ts",
     "demo": "node scripts/demo-walkthrough.mjs",
     "smoke:pwa": "node scripts/smoke-pwa.mjs",
-    "icons": "node scripts/gerar-icones.mjs"
+    "icons": "node scripts/gerar-icones.mjs",
+    "demo:subir": "./scripts/subir-demo.sh"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",

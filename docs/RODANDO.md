@@ -9,9 +9,23 @@ liberação explícita, e a carteira opera em **testnet** por padrão.
 - **Java** — só o emulador do Firestore usa, e ele não sobe sem
 - Nenhum banco, nenhum Docker
 
-## Subir
+## Subir tudo de uma vez
 
-Quatro terminais. O primeiro precisa terminar antes do segundo.
+```bash
+npm install
+npm run demo:subir
+```
+
+Sobe emulador, dados de referência, API, worker e interface, e segura até você
+apertar Ctrl-C. Abra **http://localhost:3996**.
+
+As chaves são geradas na hora e o emulador perde tudo ao ser derrubado — é
+para ver o sistema funcionando, não para guardar nada.
+
+## Subir passo a passo
+
+Se preferir controlar cada parte. Quatro terminais; o primeiro precisa
+terminar antes do segundo.
 
 ```bash
 npm install
