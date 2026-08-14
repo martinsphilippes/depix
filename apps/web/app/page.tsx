@@ -13,6 +13,7 @@ import { useEffect, useState } from 'react';
 
 import { ApiRequestError, type HistoryItem, type WalletBalance, api } from '../lib/api';
 import { TransactionRow } from '../components/TransactionRow';
+import { InstalarApp } from '../components/InstalarApp';
 import { hasWallet } from '../lib/device-wallet';
 
 export default function Dashboard() {
@@ -147,6 +148,8 @@ export default function Dashboard() {
           <span className="action-hint">Pix ou carteira</span>
         </Link>
       </div>
+
+      <InstalarApp />
 
       <div className="section-title">Atividade recente</div>
 

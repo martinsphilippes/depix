@@ -24,6 +24,7 @@ npm test                      # sobe o emulador do Firestore e roda tudo
 npm run smoke:api             # sobe a API de verdade e bate nas rotas por HTTP
 npm run demo                  # percorre o sistema num navegador e salva as telas
 npm run smoke:web             # abre o app num Chromium e gera uma carteira
+npm run smoke:pwa             # confere manifesto, service worker e offline
 npm run test:testnet          # envio real na Liquid testnet (usa faucet)
 
 # desenvolvimento (dois terminais)
@@ -79,6 +80,8 @@ Telas: entrar, carteira (criar/restaurar com backup conferido), início, receber
 **A transação é validada saída por saída antes de ser assinada.** O saque exige que a taxa do operador seja paga numa saída explícita (não-blindada); pagá-la blindada, segundo a documentação do provider, faz a operação falhar e pode perder os fundos. O guard é função pura sobre formas de saída — testado exaustivamente, sem rede e sem carteira financiada — e **aborta em vez de transmitir**. Ele também recusa saída explícita onde ela não deveria existir, porque explícito na Liquid significa valor visível na cadeia.
 
 **Verificação de webhook recebe `Buffer`, não objeto.** Reserializar o JSON antes de conferir a assinatura é o erro clássico da integração; a assinatura do tipo torna esse erro impossível de cometer por descuido, e há teste de regressão provando que o corpo reserializado é rejeitado.
+
+**O PWA não guarda uma única resposta da API em cache.** É o oposto do que quase todo tutorial ensina, e a razão é que um saldo em cache é uma mentira sobre dinheiro: quem vê R$ 1.200 num aplicativo offline e conclui que pode gastar não foi ajudado, foi enganado. O service worker guarda só os arquivos estáticos — que têm hash no nome e são imutáveis — e serve uma tela honesta de "sem conexão" quando falta rede. Há verificação automática de que nenhuma URL da API aparece no cache e de que a tela offline não exibe valor nenhum.
 
 **Há teste que abre um navegador de verdade, e ele já pagou por si.** `npm run smoke:web` sobe o app num Chromium, gera uma carteira e cifra um cofre. Foi assim que se descobriu que a CSP — declarada como cabeçalho estático, com build e testes passando — bloqueava os scripts de hidratação do Next e entregava ao usuário uma página **sem um único botão funcionando**. Nenhum teste de unidade pegaria isso: CSP só é aplicada por navegador. A correção é nonce por requisição em `middleware.ts`, que não abre mão da proteção.
 

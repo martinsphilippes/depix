@@ -1,0 +1,8 @@
+<!-- Variante "maskable": o conteúdo cabe no círculo seguro de 80% que o
+     Android recorta. Sem esta margem, o sistema cortaria as bordas do desenho. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <rect width="512" height="512" fill="#0f1115"/>
+  <rect x="146" y="182" width="220" height="158" rx="28" fill="none" stroke="#35a173" stroke-width="22"/>
+  <path d="M146 232h220" stroke="#35a173" stroke-width="22" stroke-linecap="round"/>
+  <circle cx="312" cy="288" r="17" fill="#35a173"/>
+</svg>

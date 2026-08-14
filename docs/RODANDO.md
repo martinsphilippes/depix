@@ -100,12 +100,32 @@ Abra **http://localhost:3000**.
 | **Lightning** | DePix é emitido na Liquid; não há ponte documentada. O botão aparece desabilitado, com o motivo |
 | **Ler QR pela câmera no Safari ou Firefox de desktop** | Usamos a API do navegador em vez de biblioteca de terceiro. Onde falta, o botão some e o campo de colar continua |
 
+## Instalar como aplicativo
+
+A carteira é um PWA: no Android/Chrome aparece o convite "Instalar" na tela
+inicial; no iPhone, o caminho é Compartilhar → **Adicionar à Tela de Início**,
+e o próprio app mostra essa instrução.
+
+Instalado, abre sem barra de endereço, com ícone próprio e atalhos para
+Receber e Enviar ao segurar o ícone.
+
+> Em desenvolvimento pela rede local (`http://192.168.x.x:3000`), o navegador
+> não instala: PWA exige HTTPS, com `localhost` como única exceção. Para testar
+> a instalação de outro aparelho, use um túnel HTTPS.
+
+**Offline, o aplicativo não mostra saldo.** Não é limitação — é decisão. Um
+saldo guardado em cache pareceria o atual, e decidir um envio por um número
+desatualizado é como se perde dinheiro. A tela diz que falta conexão, e lembra
+que o dinheiro está na Liquid e a chave no aparelho: nossa indisponibilidade
+não é a indisponibilidade dele.
+
 ## Ver sem instalar nada
 
 ```bash
 npm run demo        # percorre o sistema num Chromium e salva as telas
 npm run smoke:api   # sobe a API e bate nas rotas por HTTP
 npm run smoke:web   # abre o app num navegador e gera uma carteira
+npm run smoke:pwa   # confere manifesto, service worker e comportamento offline
 ```
 
 ## Enviar de verdade, na testnet

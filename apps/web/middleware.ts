@@ -67,6 +67,11 @@ export function middleware(request: NextRequest) {
     `connect-src 'self' ${API_URL} https://blockstream.info`,
     // A câmera do leitor de QR entrega quadros por `blob:`/`mediastream:`.
     "media-src 'self' blob: mediastream:",
+    // O service worker é script, e `script-src` sozinho não o cobre: sem
+    // `worker-src`, o navegador recusa registrá-lo e o aplicativo deixa de ser
+    // instalável — sem erro visível na página.
+    "worker-src 'self'",
+    "manifest-src 'self'",
     "font-src 'self'",
     "object-src 'none'",
     "base-uri 'self'",
@@ -89,5 +94,8 @@ export function middleware(request: NextRequest) {
 export const config = {
   // Tudo, menos os estáticos: eles não carregam script inline, não precisam
   // de nonce, e passar cada um pelo middleware custaria por requisição.
-  matcher: ['/((?!_next/static|_next/image|favicon.ico).*)'],
+  //
+  // `sw.js` também fica de fora, e por um motivo específico: o service worker
+  // é servido do escopo raiz e o middleware não deve reescrever nada nele.
+  matcher: ['/((?!_next/static|_next/image|favicon.ico|sw.js|icons/).*)'],
 };

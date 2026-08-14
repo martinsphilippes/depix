@@ -22,7 +22,9 @@
     "smoke:api": "firebase emulators:exec --only firestore --project demo-depix-dev \"./scripts/smoke-api.sh\"",
     "smoke:web": "node scripts/smoke-web.mjs",
     "test:testnet": "LIQUID_TESTNET_E2E=yes node --test --experimental-strip-types packages/wallet/test/testnet.integration.test.ts",
-    "demo": "node scripts/demo-walkthrough.mjs"
+    "demo": "node scripts/demo-walkthrough.mjs",
+    "smoke:pwa": "node scripts/smoke-pwa.mjs",
+    "icons": "node scripts/gerar-icones.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",
