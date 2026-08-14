@@ -400,8 +400,8 @@ interface SwapProvider     { /* SideSwap DePix↔L-BTC — documentado, não pri
 |---|---|---|
 | Frontend | Next.js + TypeScript | Conforme preferência; a Wallet Layer roda no browser via `lwk_wasm` |
 | Backend financeiro | Node.js + TypeScript, **processo persistente** (container dedicado) | **Não serverless.** Workers de confirmação on-chain e conciliação são processos longos. Vercel para o frontend, backend em infra dedicada (seção 36) |
-| Banco | PostgreSQL / Supabase | Ledger com locks e constraints — ver DATABASE.md |
-| Filas | Fila persistente com Redis (BullMQ) ou fila no próprio Postgres | Webhooks e confirmações não podem depender do request HTTP |
+| Banco | **Cloud Firestore (Firebase)** | Ver DATABASE.md — inclusive o que mudou nas garantias do ledger em relação a um banco relacional |
+| Filas | Coleção `jobQueue` no Firestore, com ID determinístico como dedupe | Webhooks e confirmações não podem depender do request HTTP |
 | Observabilidade | Logging estruturado com redaction obrigatória | Ver SECURITY.md |
 
 **Workers necessários:** confirmação de depósito Pix; observação de confirmações na Liquid; entrega/reprocessamento de webhooks; conciliação (4 fontes); notificações; expiração de cobranças.

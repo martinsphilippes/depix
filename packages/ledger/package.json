@@ -1,6 +1,6 @@
 {
   "name": "@depix/ledger",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
   "main": "./src/index.ts",
@@ -9,6 +9,7 @@
   },
   "dependencies": {
     "@depix/core": "*",
-    "@depix/db": "*"
+    "@depix/firestore": "*",
+    "@google-cloud/firestore": "^9.0.0"
   }
 }

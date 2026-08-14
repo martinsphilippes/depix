@@ -3,22 +3,29 @@
  *
  * Fastify com duas particularidades que não são detalhe:
  *
- *  1. O endpoint de webhook precisa dos **bytes brutos** do corpo. Um
- *     parser de JSON que reserializa quebra a verificação de assinatura,
- *     então há um content-type parser dedicado para essa rota.
- *  2. Nenhuma rota financeira responde antes do commit da transação de
- *     banco. "Aceito" no HTTP tem de significar "gravado".
+ *  1. O endpoint de webhook precisa dos **bytes brutos** do corpo. Um parser
+ *     de JSON que reserializa quebra a verificação de assinatura, então há um
+ *     content-type parser dedicado que guarda o Buffer original.
+ *  2. Nenhuma rota financeira responde antes do commit no Firestore.
+ *     "Aceito" no HTTP tem de significar "gravado".
  */
 
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from 'fastify';
 
-import { DomainError, IntegrationPendingError, ProviderError, formatBRL, money, parseUserAmount, rescale } from '@depix/core';
-import { type Db, fromPgPool } from '@depix/db';
+import {
+  DomainError,
+  IntegrationPendingError,
+  ProviderError,
+  formatBRL,
+  money,
+  parseUserAmount,
+  rescale,
+} from '@depix/core';
+import { type Db, createDb, createFirestore } from '@depix/firestore';
 import { walletBalance } from '@depix/ledger';
 import {
   DepixAppProvider,
   type DepixProvider,
-  EsploraLiquidProvider,
   LIGHTNING_UNAVAILABLE_MESSAGE,
   PendingPixProvider,
   RECIPIENT_UNKNOWN_NOTICE,
@@ -26,8 +33,8 @@ import {
   maskPixKey,
 } from '@depix/providers';
 import {
+  type HistoryItem,
   createDepositIntent,
-  hashIp,
   ingestWebhook,
   listHistory,
   periodRange,
@@ -56,7 +63,7 @@ export function buildDepixProvider(config: AppConfig): DepixProvider {
       apiKey: config.depix.apiKey,
       webhookSecret: config.depix.webhookSecret,
       environment: config.environment,
-      baseUrl: config.depix.baseUrl,
+      ...(config.depix.baseUrl ? { baseUrl: config.depix.baseUrl } : {}),
     });
   }
   throw new IntegrationPendingError(
@@ -69,8 +76,7 @@ export async function buildServer(deps: ServerDeps): Promise<FastifyInstance> {
   const app = Fastify({
     logger: {
       level: process.env['LOG_LEVEL'] ?? 'info',
-      // Redaction obrigatória (SECURITY.md §9). A lista cobre os caminhos
-      // conhecidos; o filtro por padrão fica no logger da aplicação.
+      // Redaction obrigatória (SECURITY.md §9).
       redact: {
         paths: [
           'req.headers.authorization',
@@ -86,14 +92,13 @@ export async function buildServer(deps: ServerDeps): Promise<FastifyInstance> {
         censor: '[REDACTED]',
       },
     },
-    // O corpo do webhook é pequeno; limitar evita abuso.
     bodyLimit: 1_048_576,
   });
 
   // --- Parser de corpo bruto para webhooks ---------------------------------
-  // Guarda o Buffer original ANTES de qualquer parse. Sem isto, a
-  // verificação de assinatura seria feita sobre bytes reserializados e
-  // falharia (ou, pior, passaria a ser afrouxada para "funcionar").
+  // Guarda o Buffer original ANTES de qualquer parse. Sem isto, a verificação
+  // de assinatura seria feita sobre bytes reserializados e falharia (ou,
+  // pior, passaria a ser afrouxada para "funcionar").
   app.addContentTypeParser(
     'application/json',
     { parseAs: 'buffer' },
@@ -111,14 +116,18 @@ export async function buildServer(deps: ServerDeps): Promise<FastifyInstance> {
   app.setErrorHandler((error, request, reply) => {
     if (error instanceof IntegrationPendingError) {
       // 501: não é erro do cliente nem falha nossa — é funcionalidade que
-      // ainda não existe, e a resposta diz exatamente do que ela depende.
+      // ainda não existe, e a resposta diz do que ela depende.
       return reply.status(501).send({
         error: { code: error.code, message: error.message, pendingOn: error.details['pendingOn'] },
       });
     }
     if (error instanceof ProviderError) {
       return reply.status(error.retryable ? 503 : 502).send({
-        error: { code: error.code, providerCode: error.details['providerCode'], message: error.message },
+        error: {
+          code: error.code,
+          providerCode: error.details['providerCode'],
+          message: error.message,
+        },
       });
     }
     if (error instanceof DomainError) {
@@ -135,9 +144,11 @@ export async function buildServer(deps: ServerDeps): Promise<FastifyInstance> {
     if (!token) {
       return reply.status(401).send({ error: { code: 'unauthenticated', message: 'Sessão ausente' } });
     }
-    const session = await deps.db.transaction((tx) => resolveSession(tx, token));
+    const session = await resolveSession(deps.db, token);
     if (!session) {
-      return reply.status(401).send({ error: { code: 'session_invalid', message: 'Sessão inválida ou expirada' } });
+      return reply
+        .status(401)
+        .send({ error: { code: 'session_invalid', message: 'Sessão inválida ou expirada' } });
     }
     (request as FastifyRequest & { session?: unknown }).session = session;
   }
@@ -148,15 +159,16 @@ export async function buildServer(deps: ServerDeps): Promise<FastifyInstance> {
   app.get('/health', async () => {
     const checks: Record<string, string> = {};
     try {
-      await deps.db.query('SELECT 1');
-      checks['database'] = 'ok';
+      await deps.db.collection('assets').limit(1).get();
+      checks['firestore'] = 'ok';
     } catch {
-      checks['database'] = 'fail';
+      checks['firestore'] = 'fail';
     }
     return {
       status: Object.values(checks).every((v) => v === 'ok') ? 'ok' : 'degraded',
       environment: deps.config.environment,
       realFunds: deps.config.realFundsEnabled,
+      emulated: Boolean(deps.config.firebase.emulatorHost),
       provider: deps.depixProvider.info.code,
       checks,
     };
@@ -165,9 +177,9 @@ export async function buildServer(deps: ServerDeps): Promise<FastifyInstance> {
   // --- Carteira -------------------------------------------------------------
   app.get('/wallet/balance', authed, async (request) => {
     const { userId } = sessionOf(request);
-    const depix = await deps.db.transaction((tx) => walletBalance(tx, userId, 'DEPIX'));
+    const depix = await walletBalance(deps.db, userId, 'DEPIX');
 
-    // O usuário vê reais. O DePix é detalhe de infraestrutura (requisitos §32).
+    // O usuário vê reais. O DePix é detalhe de infraestrutura.
     const toBrl = (v: bigint) => rescale(money('DEPIX', v), 'BRL', 'floor');
 
     return {
@@ -197,12 +209,14 @@ export async function buildServer(deps: ServerDeps): Promise<FastifyInstance> {
     }
     const amount = parseUserAmount(String(body.amount ?? ''), 'BRL');
 
-    const intent = await deps.db.transaction((tx) =>
-      createDepositIntent(tx, { provider: deps.depixProvider }, {
+    const intent = await createDepositIntent(
+      deps.db,
+      { provider: deps.depixProvider },
+      {
         userId,
         amountBrlCents: amount.amount,
-        destinationAddress: body.destinationAddress!,
-      }),
+        destinationAddress: body.destinationAddress,
+      },
     );
 
     return reply.status(201).send({
@@ -228,13 +242,11 @@ export async function buildServer(deps: ServerDeps): Promise<FastifyInstance> {
     const amountBrl = parseUserAmount(String(body.amount ?? ''), 'BRL');
     const amountDepix = rescale(amountBrl, 'DEPIX');
 
-    const review = await deps.db.transaction((tx) =>
-      prepareDepixSend(tx, {
-        userId,
-        destinationAddress: body.destinationAddress!,
-        amount: amountDepix,
-      }),
-    );
+    const review = await prepareDepixSend(deps.db, {
+      userId,
+      destinationAddress: body.destinationAddress,
+      amount: amountDepix,
+    });
 
     const toBrl = (v: bigint) => formatBRL(rescale(money('DEPIX', v), 'BRL', 'floor'));
 
@@ -246,8 +258,8 @@ export async function buildServer(deps: ServerDeps): Promise<FastifyInstance> {
       fee: toBrl(review.breakdown.totalFee.amount),
       total: toBrl(review.breakdown.totalDebit.amount),
       remainingAfter: toBrl(review.remainingAfter.amount),
-      // A transação é montada e assinada no dispositivo do usuário.
-      // O servidor não tem — e não terá — como assinar por ele.
+      // A transação é montada e assinada no dispositivo do usuário. O
+      // servidor não tem — e não terá — como assinar por ele.
       nextStep: 'sign_on_device',
     });
   });
@@ -283,29 +295,28 @@ export async function buildServer(deps: ServerDeps): Promise<FastifyInstance> {
   // --- Extrato --------------------------------------------------------------
   app.get('/history', authed, async (request) => {
     const { userId } = sessionOf(request);
-    const query = request.query as { period?: string; limit?: string; offset?: string };
+    const query = request.query as { period?: string; limit?: string };
 
     const range =
       query.period && ['today', '7d', '30d', 'month'].includes(query.period)
         ? periodRange(query.period as 'today' | '7d' | '30d' | 'month')
         : undefined;
 
-    const items = await deps.db.transaction((tx) =>
-      listHistory(tx, {
-        userId,
-        from: range?.from,
-        to: range?.to,
-        limit: query.limit ? Number(query.limit) : 50,
-        offset: query.offset ? Number(query.offset) : 0,
-      }),
-    );
+    const items = await listHistory(deps.db, {
+      userId,
+      ...(range ? { from: range.from, to: range.to } : {}),
+      limit: query.limit ? Number(query.limit) : 50,
+    });
 
-    return { items };
+    // Quantias saem como string, nunca como bigint: `JSON.stringify` lança em
+    // bigint, e uma resposta que derruba a requisição por causa de um valor
+    // grande é o tipo de falha que só aparece em produção.
+    return { items: items.map(toApiHistoryItem) };
   });
 
   app.get('/transactions/:id/timeline', authed, async (request) => {
     const { id } = request.params as { id: string };
-    const events = await deps.db.transaction((tx) => transactionTimeline(tx, id));
+    const events = await transactionTimeline(deps.db, id);
     return { events };
   });
 
@@ -336,6 +347,31 @@ export async function buildServer(deps: ServerDeps): Promise<FastifyInstance> {
 
 // ---------------------------------------------------------------------------
 
+/**
+ * Converte um item do extrato para o formato de resposta.
+ *
+ * A única regra que importa aqui: **nenhum `bigint` atravessa a fronteira
+ * HTTP**. Quantia vira string; contador vira number. Deixar um bigint passar
+ * faz o serializador do Fastify lançar em tempo de execução.
+ */
+function toApiHistoryItem(item: HistoryItem): Record<string, unknown> {
+  return {
+    transactionId: item.transactionId,
+    kind: item.kind,
+    status: item.status,
+    statusLabel: item.statusLabel,
+    direction: item.direction,
+    title: item.title,
+    amountLabel: item.amountLabel,
+    amountBrlCents: item.amountBrlCents.toString(),
+    feeBrlCents: item.feeBrlCents.toString(),
+    counterparty: item.counterparty,
+    createdAt: item.createdAt.toISOString(),
+    completedAt: item.completedAt?.toISOString() ?? null,
+    technical: item.technical,
+  };
+}
+
 const STATUS_BY_CODE: Readonly<Record<string, number>> = {
   insufficient_funds: 422,
   invalid_amount: 400,
@@ -346,6 +382,8 @@ const STATUS_BY_CODE: Readonly<Record<string, number>> = {
   unknown_ledger_account: 404,
   invalid_transition: 409,
   asset_id_mismatch: 422,
+  duplicate_e2e_id: 409,
+  amount_out_of_range: 400,
   ledger_invariant_violated: 500,
 };
 
@@ -367,9 +405,13 @@ function sessionOf(request: FastifyRequest): { userId: string; id: string } {
 
 export async function start(): Promise<void> {
   const config = loadConfig();
-  const { Pool } = await import('pg');
-  const pool = new Pool({ connectionString: config.databaseUrl });
-  const db = fromPgPool(pool as never);
+
+  const fs = createFirestore({
+    projectId: config.firebase.projectId,
+    ...(config.firebase.emulatorHost ? { emulatorHost: config.firebase.emulatorHost } : {}),
+    ...(config.firebase.databaseId ? { databaseId: config.firebase.databaseId } : {}),
+  });
+  const db = createDb(fs);
   const depixProvider = buildDepixProvider(config);
 
   const app = await buildServer({ config, db, depixProvider });
@@ -377,5 +419,3 @@ export async function start(): Promise<void> {
 
   await app.listen({ port: config.port, host: '0.0.0.0' });
 }
-
-export { hashIp, EsploraLiquidProvider };

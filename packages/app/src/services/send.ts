@@ -8,8 +8,8 @@
  *   3. só então montar/assinar/transmitir
  *   4. confirmar → liquidar    |    falhar → estornar a reserva
  *
- * Inverter 2 e 3 abriria a janela em que dois envios simultâneos leem o
- * mesmo saldo. A reserva acontece antes de qualquer chamada de rede.
+ * Inverter 2 e 3 abriria a janela em que dois envios simultâneos leem o mesmo
+ * saldo. A reserva acontece antes de qualquer chamada de rede.
  */
 
 import {
@@ -20,7 +20,7 @@ import {
   deriveIdempotencyKey,
   money,
 } from '@depix/core';
-import type { Queryable } from '@depix/db';
+import { COLLECTIONS, type Db, type LiquidTransactionDoc, liquidTxId } from '@depix/firestore';
 import { refundReservation, reserveForSend, settleSend, walletBalance } from '@depix/ledger';
 
 import { resolvePlatformFeeRule } from './fees.ts';
@@ -43,7 +43,7 @@ export interface SendReview {
  * responsabilidade do worker de expiração, não do navegador.
  */
 export async function prepareDepixSend(
-  tx: Queryable,
+  db: Db,
   params: {
     userId: string;
     destinationAddress: string;
@@ -61,11 +61,11 @@ export async function prepareDepixSend(
     throw new DomainError('invalid_amount', 'Informe um valor maior que zero');
   }
 
-  const platformRule = await resolvePlatformFeeRule(tx, 'depix_send');
+  const platformRule = await resolvePlatformFeeRule(db, 'depix_send');
   const providerFee = params.providerFee ?? money('DEPIX', 0n);
   const breakdown = breakdownSenderPays(params.amount, platformRule, providerFee);
 
-  const balance = await walletBalance(tx, params.userId, 'DEPIX');
+  const balance = await walletBalance(db, params.userId, 'DEPIX');
   if (balance.available.amount < breakdown.totalDebit.amount) {
     // Falha aqui, com a taxa incluída na conta, antes de criar transação.
     throw new DomainError('insufficient_funds', 'Saldo insuficiente para o valor mais as taxas', {
@@ -84,7 +84,7 @@ export async function prepareDepixSend(
       fee: breakdown.totalFee.amount,
     });
 
-  const { transaction } = await createTransaction(tx, {
+  const { transaction } = await createTransaction(db, {
     userId: params.userId,
     kind: 'depix_send',
     assetCode: 'DEPIX',
@@ -97,7 +97,7 @@ export async function prepareDepixSend(
 
   // Reserva ANTES de qualquer rede.
   await reserveForSend(
-    tx,
+    db,
     {
       transactionId: transaction.id,
       userId: params.userId,
@@ -122,28 +122,38 @@ export async function prepareDepixSend(
  * serviço só recebe o txid resultante.
  */
 export async function markSendBroadcast(
-  tx: Queryable,
-  params: { transactionId: string; txid: string; actor?: string },
+  db: Db,
+  params: { transactionId: string; txid: string; amount: bigint; actor?: string },
 ): Promise<void> {
   const actor = (params.actor ?? 'worker:send') as never;
 
-  await tx.query(
-    `INSERT INTO liquid_transactions
-       (transaction_id, txid, vout, asset_liquid_id, amount, direction, confirmations)
-     SELECT t.id, $2, 0, a.liquid_asset_id, t.amount, 'out', 0
-     FROM transactions t JOIN assets a ON a.id = t.asset_id
-     WHERE t.id = $1
-     ON CONFLICT (txid, vout, direction) DO NOTHING`,
-    [params.transactionId, params.txid],
-  );
+  const doc: LiquidTransactionDoc = {
+    transactionId: params.transactionId,
+    walletId: null,
+    txid: params.txid,
+    vout: 0,
+    assetLiquidId: '02f22f8d9c76ab41661a2729e4752e2c5d1a263012141b86ea98af5472df5189',
+    amount: params.amount,
+    direction: 'out',
+    address: null,
+    feeLbtc: null,
+    blockHeight: null,
+    confirmations: 0,
+    confirmedAt: null,
+    createdAt: new Date(),
+  };
 
-  await transitionTransaction(tx, {
+  await db
+    .doc(`${COLLECTIONS.liquidTransactions}/${liquidTxId(params.txid, 0, 'out')}`)
+    .set(doc as unknown as Record<string, unknown>, { merge: true });
+
+  await transitionTransaction(db, {
     transactionId: params.transactionId,
     to: 'DEPIX_SENT',
     actor,
     reason: `transmitido: ${params.txid}`,
   });
-  await transitionTransaction(tx, {
+  await transitionTransaction(db, {
     transactionId: params.transactionId,
     to: 'CONFIRMING',
     actor,
@@ -153,7 +163,7 @@ export async function markSendBroadcast(
 
 /** Conclusão: a reserva sai do sistema e a taxa da plataforma vira receita. */
 export async function confirmSend(
-  tx: Queryable,
+  db: Db,
   params: {
     transactionId: string;
     userId: string;
@@ -161,6 +171,7 @@ export async function confirmSend(
     platformFee: Money;
     providerFee: Money;
     confirmations: number;
+    txid?: string;
     actor?: string;
   },
 ): Promise<{ completed: boolean; reason?: string }> {
@@ -171,7 +182,7 @@ export async function confirmSend(
   }
 
   await settleSend(
-    tx,
+    db,
     { transactionId: params.transactionId, userId: params.userId, actor },
     {
       principal: params.principal,
@@ -180,12 +191,13 @@ export async function confirmSend(
     },
   );
 
-  await tx.query(
-    'UPDATE liquid_transactions SET confirmations = $2, confirmed_at = now() WHERE transaction_id = $1',
-    [params.transactionId, params.confirmations],
-  );
+  if (params.txid) {
+    await db
+      .doc(`${COLLECTIONS.liquidTransactions}/${liquidTxId(params.txid, 0, 'out')}`)
+      .set({ confirmations: params.confirmations, confirmedAt: new Date() }, { merge: true });
+  }
 
-  await transitionTransaction(tx, {
+  await transitionTransaction(db, {
     transactionId: params.transactionId,
     to: 'COMPLETED',
     actor: actor as never,
@@ -198,11 +210,11 @@ export async function confirmSend(
 /**
  * O envio falhou: devolve a reserva.
  *
- * Este é o caminho do cenário "falhou depois de debitar e antes de enviar".
- * O valor volta integralmente para `available`.
+ * Caminho do cenário "falhou depois de debitar e antes de enviar". O valor
+ * volta integralmente para `available`.
  */
 export async function failSend(
-  tx: Queryable,
+  db: Db,
   params: {
     transactionId: string;
     userId: string;
@@ -215,12 +227,12 @@ export async function failSend(
   const actor = params.actor ?? 'worker:send';
 
   await refundReservation(
-    tx,
+    db,
     { transactionId: params.transactionId, userId: params.userId, actor },
     params.totalReserved,
   );
 
-  await transitionTransaction(tx, {
+  await transitionTransaction(db, {
     transactionId: params.transactionId,
     to: 'FAILED',
     actor: actor as never,

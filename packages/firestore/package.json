@@ -1,6 +1,6 @@
 {
-  "name": "@depix/db",
-  "version": "0.2.0",
+  "name": "@depix/firestore",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
   "main": "./src/index.ts",
@@ -8,9 +8,7 @@
     ".": "./src/index.ts"
   },
   "dependencies": {
-    "pg": "^8.13.1"
-  },
-  "devDependencies": {
-    "@types/pg": "^8.11.10"
+    "@depix/core": "*",
+    "@google-cloud/firestore": "^9.0.0"
   }
 }

@@ -1,0 +1,40 @@
+rules_version = '2';
+
+// ============================================================================
+// Regras de segurança do Firestore
+// ============================================================================
+//
+// ⚠️ LEIA ANTES DE CONFIAR NESTE ARQUIVO
+//
+// Estas regras se aplicam a clientes (SDK web/mobile e chamadas REST
+// autenticadas como usuário final). Elas **NÃO** se aplicam ao Admin SDK:
+// credenciais de service account contornam as regras por completo. Isso foi
+// verificado empiricamente contra o emulador, não presumido.
+//
+// Consequência de arquitetura, registrada aqui de propósito:
+//
+//   No PostgreSQL, a imutabilidade do ledger e a proibição de saldo negativo
+//   eram impostas por TRIGGER — o banco recusava a escrita mesmo vinda da
+//   própria aplicação. No Firestore essa garantia não existe para o backend.
+//   Ela passa a ser invariante de aplicação, concentrada em um único módulo
+//   auditado (packages/ledger/src/posting.ts) e verificada continuamente pela
+//   conciliação, que recomputa os saldos a partir dos lançamentos.
+//
+//   Ou seja: a conciliação deixou de ser uma rede de segurança secundária e
+//   passou a ser parte do mecanismo de garantia. Ver DATABASE.md §2.
+//
+// O papel destas regras, então, é um só e é importante: garantir que
+// NENHUM cliente fale direto com o banco. Todo acesso passa pela API, que é
+// onde vivem autenticação, limites, taxas e o ledger.
+// ============================================================================
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Negação total para clientes. Não há exceção, e não deve haver:
+    // um app que lê saldo direto do Firestore contorna o ledger.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

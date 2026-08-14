@@ -6,16 +6,37 @@
     "declaration": false,
     "declarationMap": false,
     "allowImportingTsExtensions": true,
-    "types": ["node"],
+    "types": [
+      "node"
+    ],
     "paths": {
-      "@depix/core": ["./packages/core/src/index.ts"],
-      "@depix/db": ["./packages/db/src/index.ts"],
-      "@depix/ledger": ["./packages/ledger/src/index.ts"],
-      "@depix/providers": ["./packages/providers/src/index.ts"],
-      "@depix/app": ["./packages/app/src/index.ts"]
+      "@depix/core": [
+        "./packages/core/src/index.ts"
+      ],
+      "@depix/ledger": [
+        "./packages/ledger/src/index.ts"
+      ],
+      "@depix/providers": [
+        "./packages/providers/src/index.ts"
+      ],
+      "@depix/app": [
+        "./packages/app/src/index.ts"
+      ],
+      "@depix/firestore": [
+        "./packages/firestore/src/index.ts"
+      ]
     },
     "baseUrl": "."
   },
-  "include": ["packages/*/src/**/*.ts", "packages/*/test/**/*.ts", "apps/api/src/**/*.ts", "apps/api/test/**/*.ts"],
-  "exclude": ["node_modules", "**/dist", "apps/web"]
+  "include": [
+    "packages/*/src/**/*.ts",
+    "packages/*/test/**/*.ts",
+    "apps/api/src/**/*.ts",
+    "apps/api/test/**/*.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "**/dist",
+    "apps/web"
+  ]
 }

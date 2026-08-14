@@ -1,11 +1,15 @@
 /**
  * Ciclo de vida das transações de negócio.
  *
- * Toda mudança de estado passa por aqui e deixa rastro em
- * `transaction_events`. A matriz de transições é validada em três lugares
- * — aqui, no trigger do banco e no módulo de domínio — de propósito: é a
- * regra que impede uma transação ser marcada como concluída sem
- * confirmação real.
+ * Toda mudança de estado passa por aqui e deixa rastro na subcoleção
+ * `events`. A matriz de transições é validada em `@depix/core` e aplicada
+ * aqui **dentro de uma transação do Firestore**, relendo o estado atual:
+ * dois workers processando o mesmo webhook não podem aplicar transições em
+ * cima de leituras obsoletas.
+ *
+ * Nota sobre o que se perdeu na migração: no PostgreSQL havia também um
+ * trigger replicando a matriz, de modo que uma escrita fora da aplicação
+ * ainda era barrada. No Firestore isso não existe — a validação é só aqui.
  */
 
 import {
@@ -16,7 +20,16 @@ import {
   assertActorMayComplete,
   assertTransition,
 } from '@depix/core';
-import type { Queryable } from '@depix/db';
+import {
+  COLLECTIONS,
+  SUBCOLLECTIONS,
+  type Db,
+  type TransactionDoc,
+  type TransactionEventDoc,
+  asNumber,
+  txIdempotencyId,
+} from '@depix/firestore';
+import type { AssetCode } from '@depix/core';
 
 export interface TransactionRecord {
   readonly id: string;
@@ -33,120 +46,119 @@ export interface TransactionRecord {
   readonly completedAt: Date | null;
 }
 
-interface TransactionRow {
-  id: string;
-  user_id: string;
-  kind: TxKind;
-  status: TxStatus;
-  asset_code: string;
-  amount: string;
-  platform_fee: string;
-  provider_fee: string;
-  counterparty: string | null;
-  error_code: string | null;
-  created_at: Date;
-  completed_at: Date | null;
-}
-
-function toRecord(row: TransactionRow): TransactionRecord {
+function toRecord(id: string, doc: TransactionDoc): TransactionRecord {
   return {
-    id: row.id,
-    userId: row.user_id,
-    kind: row.kind,
-    status: row.status,
-    assetCode: row.asset_code,
-    amount: BigInt(row.amount),
-    platformFee: BigInt(row.platform_fee),
-    providerFee: BigInt(row.provider_fee),
-    counterparty: row.counterparty,
-    errorCode: row.error_code,
-    createdAt: row.created_at,
-    completedAt: row.completed_at,
+    id,
+    userId: doc.userId,
+    kind: doc.kind,
+    status: doc.status,
+    assetCode: doc.assetCode,
+    amount: doc.amount,
+    platformFee: doc.platformFee,
+    providerFee: doc.providerFee,
+    counterparty: doc.counterparty,
+    errorCode: doc.errorCode,
+    createdAt: toDate(doc.createdAt),
+    completedAt: doc.completedAt ? toDate(doc.completedAt) : null,
   };
 }
 
-const SELECT_TX = `
-  SELECT t.id, t.user_id, t.kind, t.status, a.code AS asset_code, t.amount::TEXT,
-         t.platform_fee::TEXT, t.provider_fee::TEXT, t.counterparty, t.error_code,
-         t.created_at, t.completed_at
-  FROM transactions t JOIN assets a ON a.id = t.asset_id`;
-
 /**
- * Cria uma transação. Idempotente por `(user_id, idempotency_key)`: repetir
- * a chamada devolve a mesma transação em vez de criar outra.
+ * Cria uma transação.
+ *
+ * Idempotente por `(userId, idempotencyKey)`. Como a transação tem ID
+ * próprio, a unicidade vem de um documento de índice separado cujo ID é a
+ * chave composta — `create()` nele é a constraint.
  */
 export async function createTransaction(
-  tx: Queryable,
+  db: Db,
   params: {
     userId: string;
     kind: TxKind;
-    assetCode: string;
+    assetCode: AssetCode;
     amount: bigint;
     idempotencyKey: string;
     platformFee?: bigint;
     providerFee?: bigint;
     counterparty?: string | null;
     providerCode?: string | null;
-    environment?: string;
   },
 ): Promise<{ transaction: TransactionRecord; created: boolean }> {
   if (params.amount <= 0n) {
     throw new DomainError('invalid_amount', 'Valor da transação precisa ser positivo');
   }
 
-  const existing = await tx.query<TransactionRow>(
-    `${SELECT_TX} WHERE t.user_id = $1 AND t.idempotency_key = $2`,
-    [params.userId, params.idempotencyKey],
-  );
-  if (existing.rows[0]) {
-    return { transaction: toRecord(existing.rows[0]), created: false };
-  }
+  const indexId = txIdempotencyId(params.userId, params.idempotencyKey);
+  const indexRef = db.doc(`${COLLECTIONS.txIdempotencyIndex}/${indexId}`);
+  const txRef = db.collection(COLLECTIONS.transactions).doc();
 
-  const inserted = await tx.query<{ id: string }>(
-    `INSERT INTO transactions
-       (user_id, kind, idempotency_key, asset_id, amount, platform_fee, provider_fee,
-        counterparty, provider_id)
-     VALUES ($1, $2::tx_kind, $3, (SELECT id FROM assets WHERE code = $4), $5, $6, $7, $8,
-             (SELECT id FROM providers WHERE code = $9 AND environment = $10::env_kind LIMIT 1))
-     RETURNING id`,
-    [
-      params.userId,
-      params.kind,
-      params.idempotencyKey,
-      params.assetCode,
-      params.amount.toString(),
-      (params.platformFee ?? 0n).toString(),
-      (params.providerFee ?? 0n).toString(),
-      params.counterparty ?? null,
-      params.providerCode ?? null,
-      params.environment ?? 'development',
-    ],
-  );
+  const result = await db.runTransaction(async (tx) => {
+    const existingIndex = await tx.get<{ transactionId: string }>(indexRef);
+    if (existingIndex) {
+      const existing = await tx.get<TransactionDoc>(
+        db.doc(`${COLLECTIONS.transactions}/${existingIndex.transactionId}`),
+      );
+      if (existing) {
+        return { id: existingIndex.transactionId, doc: existing, created: false };
+      }
+    }
 
-  const id = inserted.rows[0]!.id;
-  await tx.query(
-    `INSERT INTO transaction_events (transaction_id, from_status, to_status, actor, reason)
-     VALUES ($1, NULL, 'CREATED', 'system', 'transação criada')`,
-    [id],
-  );
+    const now = new Date();
+    const doc: TransactionDoc = {
+      userId: params.userId,
+      kind: params.kind,
+      status: 'CREATED',
+      idempotencyKey: params.idempotencyKey,
+      assetCode: params.assetCode,
+      amount: params.amount,
+      platformFee: params.platformFee ?? 0n,
+      providerFee: params.providerFee ?? 0n,
+      counterparty: params.counterparty ?? null,
+      providerCode: params.providerCode ?? null,
+      errorCode: null,
+      createdAt: now,
+      updatedAt: now,
+      completedAt: null,
+    };
 
-  const created = await tx.query<TransactionRow>(`${SELECT_TX} WHERE t.id = $1`, [id]);
-  return { transaction: toRecord(created.rows[0]!), created: true };
+    tx.create(txRef, doc as unknown as Record<string, unknown>);
+    // Se outra requisição criar este índice no meio do caminho, o Firestore
+    // aborta e reexecuta — e a releitura acima devolve a transação existente.
+    tx.create(indexRef, { transactionId: txRef.id, userId: params.userId, createdAt: now });
+
+    const event: TransactionEventDoc = {
+      fromStatus: null,
+      toStatus: 'CREATED',
+      reason: 'transação criada',
+      actor: 'system',
+      seq: 0,
+      createdAt: now,
+    };
+    tx.create(
+      txRef.collection(SUBCOLLECTIONS.events).doc('0000'),
+      event as unknown as Record<string, unknown>,
+    );
+
+    return { id: txRef.id, doc, created: true };
+  });
+
+  return { transaction: toRecord(result.id, result.doc), created: result.created };
 }
 
-export async function getTransaction(tx: Queryable, id: string): Promise<TransactionRecord | null> {
-  const { rows } = await tx.query<TransactionRow>(`${SELECT_TX} WHERE t.id = $1`, [id]);
-  return rows[0] ? toRecord(rows[0]) : null;
+export async function getTransaction(db: Db, id: string): Promise<TransactionRecord | null> {
+  const snap = await db.doc(`${COLLECTIONS.transactions}/${id}`).get();
+  return snap.exists ? toRecord(snap.id, snap.data() as TransactionDoc) : null;
 }
 
 /**
  * Move o estado da transação.
  *
- * Trava a linha antes de ler o estado atual: dois workers processando o
- * mesmo webhook não podem aplicar transições em cima de leituras obsoletas.
+ * Relê o estado dentro da transação do Firestore; se outro processo mudou o
+ * documento no meio, a transação é reexecutada e a validação roda de novo
+ * sobre o estado novo.
  */
 export async function transitionTransaction(
-  tx: Queryable,
+  db: Db,
   params: {
     transactionId: string;
     to: TxStatus;
@@ -155,46 +167,68 @@ export async function transitionTransaction(
     errorCode?: string | null;
   },
 ): Promise<TransactionRecord> {
-  const locked = await tx.query<{ status: TxStatus }>(
-    'SELECT status FROM transactions WHERE id = $1 FOR UPDATE',
-    [params.transactionId],
-  );
-  const current = locked.rows[0];
-  if (!current) {
-    throw new DomainError('transaction_not_found', `Transação ${params.transactionId} não existe`);
-  }
+  const txRef = db.doc(`${COLLECTIONS.transactions}/${params.transactionId}`);
 
-  if (current.status === params.to) {
-    // Reprocessamento de webhook duplicado: já está no estado desejado.
-    const same = await tx.query<TransactionRow>(`${SELECT_TX} WHERE t.id = $1`, [params.transactionId]);
-    return toRecord(same.rows[0]!);
-  }
+  const result = await db.runTransaction(async (tx) => {
+    const current = await tx.get<TransactionDoc>(txRef);
+    if (!current) {
+      throw new DomainError('transaction_not_found', `Transação ${params.transactionId} não existe`);
+    }
 
-  assertTransition(current.status, params.to);
+    if (current.status === params.to) {
+      // Reprocessamento de webhook duplicado: já está no estado desejado.
+      return { id: params.transactionId, doc: current };
+    }
 
-  // Só quem verificou confirmação real pode concluir. Um webhook sozinho
-  // não tem essa autoridade (requisitos §12 e §43).
-  if (params.to === 'COMPLETED') {
-    assertActorMayComplete(current.status, params.actor);
-  }
+    assertTransition(current.status, params.to);
 
-  await tx.query(
-    `UPDATE transactions
-     SET status = $2::tx_status,
-         error_code = COALESCE($3, error_code),
-         completed_at = CASE WHEN $2::tx_status = 'COMPLETED' THEN now() ELSE completed_at END
-     WHERE id = $1`,
-    [params.transactionId, params.to, params.errorCode ?? null],
-  );
+    // Só quem verificou confirmação real pode concluir. Webhook sozinho não
+    // tem essa autoridade.
+    if (params.to === 'COMPLETED') {
+      assertActorMayComplete(current.status, params.actor);
+    }
 
-  await tx.query(
-    `INSERT INTO transaction_events (transaction_id, from_status, to_status, actor, reason)
-     VALUES ($1, $2::tx_status, $3::tx_status, $4, $5)`,
-    [params.transactionId, current.status, params.to, params.actor, params.reason ?? null],
-  );
+    const events = await tx.query<TransactionEventDoc>(
+      txRef.collection(SUBCOLLECTIONS.events).orderBy('seq', 'desc').limit(1),
+    );
+    // `asNumber` porque `useBigInt` devolve o contador como bigint, e
+    // `bigint + 1` lança TypeError.
+    const lastSeq = events[0] ? asNumber(events[0].data.seq, 'seq') : -1;
+    const nextSeq = lastSeq + 1;
 
-  const updated = await tx.query<TransactionRow>(`${SELECT_TX} WHERE t.id = $1`, [params.transactionId]);
-  return toRecord(updated.rows[0]!);
+    const now = new Date();
+    const updated: TransactionDoc = {
+      ...current,
+      status: params.to,
+      errorCode: params.errorCode ?? current.errorCode,
+      updatedAt: now,
+      completedAt: params.to === 'COMPLETED' ? now : current.completedAt,
+    };
+
+    tx.update(txRef, {
+      status: params.to,
+      errorCode: updated.errorCode,
+      updatedAt: now,
+      completedAt: updated.completedAt,
+    });
+
+    const event: TransactionEventDoc = {
+      fromStatus: current.status,
+      toStatus: params.to,
+      reason: params.reason ?? null,
+      actor: params.actor,
+      seq: nextSeq,
+      createdAt: now,
+    };
+    tx.create(
+      txRef.collection(SUBCOLLECTIONS.events).doc(String(nextSeq).padStart(4, '0')),
+      event as unknown as Record<string, unknown>,
+    );
+
+    return { id: params.transactionId, doc: updated };
+  });
+
+  return toRecord(result.id, result.doc);
 }
 
 /**
@@ -204,10 +238,10 @@ export async function transitionTransaction(
  * contrapartida da regra de nunca enviar dinheiro quando há divergência.
  */
 export async function flagForReview(
-  tx: Queryable,
+  db: Db,
   params: { transactionId: string; actor: Actor; reason: string },
 ): Promise<TransactionRecord> {
-  return transitionTransaction(tx, {
+  return transitionTransaction(db, {
     transactionId: params.transactionId,
     to: 'MANUAL_REVIEW',
     actor: params.actor,
@@ -223,26 +257,25 @@ export interface TransactionEvent {
   readonly createdAt: Date;
 }
 
-export async function transactionTimeline(
-  tx: Queryable,
-  transactionId: string,
-): Promise<TransactionEvent[]> {
-  const { rows } = await tx.query<{
-    from_status: TxStatus | null;
-    to_status: TxStatus;
-    actor: string;
-    reason: string | null;
-    created_at: Date;
-  }>(
-    `SELECT from_status, to_status, actor, reason, created_at
-     FROM transaction_events WHERE transaction_id = $1 ORDER BY id`,
-    [transactionId],
-  );
-  return rows.map((r) => ({
-    fromStatus: r.from_status,
-    toStatus: r.to_status,
-    actor: r.actor,
-    reason: r.reason,
-    createdAt: r.created_at,
-  }));
+export async function transactionTimeline(db: Db, transactionId: string): Promise<TransactionEvent[]> {
+  const snap = await db
+    .doc(`${COLLECTIONS.transactions}/${transactionId}`)
+    .collection(SUBCOLLECTIONS.events)
+    .orderBy('seq')
+    .get();
+
+  return snap.docs.map((d) => {
+    const e = d.data() as TransactionEventDoc;
+    return {
+      fromStatus: e.fromStatus,
+      toStatus: e.toStatus,
+      actor: e.actor,
+      reason: e.reason,
+      createdAt: toDate(e.createdAt),
+    };
+  });
+}
+
+function toDate(value: Date | { toDate(): Date }): Date {
+  return value instanceof Date ? value : value.toDate();
 }

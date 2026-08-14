@@ -1,16 +1,40 @@
 /**
- * Motor de lançamentos.
+ * Motor de lançamentos — Firestore.
  *
- * Duas garantias que este módulo precisa entregar, porque tudo depende delas:
+ * ⚠️ MUDANÇA MATERIAL EM RELAÇÃO À VERSÃO POSTGRESQL — leia antes de mexer.
  *
- *  1. **Idempotência.** Lançar duas vezes com a mesma chave produz um único
- *     lançamento. Não é verificação em código (que tem race condition) — é a
- *     constraint UNIQUE do banco, e a corrida perdida é tratada como sucesso.
+ * No PostgreSQL, três invariantes eram impostas pelo **banco**, por trigger,
+ * e valiam mesmo contra a própria aplicação:
  *
- *  2. **Sem saldo negativo.** Todo débito de conta de usuário trava a conta
- *     com `SELECT ... FOR UPDATE`, recalcula o saldo dentro da transação e
- *     só então lança. Duas requisições simultâneas serializam; a segunda vê
- *     o saldo já debitado.
+ *   1. lançamentos imutáveis (UPDATE/DELETE levantavam exceção);
+ *   2. partidas dobradas fechando em zero por ativo;
+ *   3. saldo de usuário nunca negativo.
+ *
+ * O Firestore não tem triggers, e suas regras de segurança **não se aplicam
+ * ao Admin SDK** — verificado contra o emulador, não presumido. Portanto as
+ * três invariantes passam a ser de aplicação e vivem **neste arquivo**.
+ *
+ * O que isso muda na prática:
+ *
+ *   • este módulo é o único caminho legítimo de escrita em `ledgerEntries` e
+ *     no campo `balance` de `ledgerAccounts`. Qualquer outro código que
+ *     escreva nesses lugares é bug, e a revisão de código precisa tratar
+ *     assim;
+ *   • não existe função de update ou delete de lançamento aqui, e não deve
+ *     passar a existir;
+ *   • a **conciliação deixou de ser rede de segurança e virou parte da
+ *     garantia**: ela recomputa o saldo a partir dos lançamentos e compara
+ *     com a projeção. Ver `reconcileAccount` em balances.ts.
+ *
+ * O que continua garantido pelo banco:
+ *
+ *   • idempotência — o ID do documento de `ledgerTransactions` É a chave de
+ *     idempotência, e `create()` falha com ALREADY_EXISTS. É a mesma força
+ *     de uma constraint UNIQUE;
+ *   • ausência de gasto duplo — a concorrência otimista do Firestore
+ *     reexecuta a transação quando um documento lido mudou, então a segunda
+ *     tentativa relê o saldo já debitado. Verificado com duas transações
+ *     simultâneas debitando o saldo inteiro: exatamente uma passa.
  */
 
 import {
@@ -20,7 +44,17 @@ import {
   LedgerInvariantError,
   assertValidIdempotencyKey,
 } from '@depix/core';
-import type { Queryable } from '@depix/db';
+import {
+  COLLECTIONS,
+  type Db,
+  type LedgerAccountDoc,
+  type LedgerEntryDoc,
+  type LedgerTransactionDoc,
+  type TxContext,
+  assertFitsInt64,
+  ledgerAccountId,
+  ledgerTransactionId,
+} from '@depix/firestore';
 
 export interface Leg {
   readonly accountCode: string;
@@ -39,18 +73,19 @@ export interface PostingRequest {
 
 export interface PostingResult {
   readonly ledgerTxId: string;
-  readonly uid: string;
   /** `true` quando a chave já existia e nada novo foi gravado. */
   readonly deduplicated: boolean;
 }
 
-const PG_UNIQUE_VIOLATION = '23505';
+/** Contas de usuário não podem ficar negativas. Contas de sistema podem. */
+const USER_ACCOUNT_KINDS = new Set(['user_available', 'user_pending_in', 'user_pending_out']);
 
-function isUniqueViolation(err: unknown): boolean {
-  return typeof err === 'object' && err !== null && (err as { code?: string }).code === PG_UNIQUE_VIOLATION;
-}
-
-/** Valida a estrutura antes de tocar o banco — erro de programação falha cedo. */
+/**
+ * Validação estrutural, antes de tocar o banco.
+ *
+ * Erro de programação falha cedo e barato — e um lançamento desbalanceado
+ * que chegasse ao banco não teria mais um trigger para barrá-lo.
+ */
 function validate(req: PostingRequest): void {
   assertValidIdempotencyKey(req.idempotencyKey);
 
@@ -68,167 +103,197 @@ function validate(req: PostingRequest): void {
         amount: leg.amount.toString(),
       });
     }
+    assertFitsInt64(leg.amount, `leg.amount(${leg.accountCode})`);
     const delta = leg.side === 'debit' ? leg.amount : -leg.amount;
     byAsset.set(leg.asset, (byAsset.get(leg.asset) ?? 0n) + delta);
   }
 
   for (const [asset, delta] of byAsset) {
     if (delta !== 0n) {
-      throw new LedgerInvariantError(
-        `Lançamento não fecha para ${asset}: diferença de ${delta}`,
-        { asset, delta: delta.toString() },
-      );
+      throw new LedgerInvariantError(`Lançamento não fecha para ${asset}: diferença de ${delta}`, {
+        asset,
+        delta: delta.toString(),
+      });
     }
   }
-}
-
-async function accountIdsFor(
-  tx: Queryable,
-  codes: readonly string[],
-): Promise<Map<string, { id: string; assetId: string }>> {
-  const unique = [...new Set(codes)];
-  const { rows } = await tx.query<{ id: string; code: string; asset_id: string }>(
-    'SELECT id, code, asset_id FROM ledger_accounts WHERE code = ANY($1)',
-    [unique],
-  );
-  const map = new Map(rows.map((r) => [r.code, { id: r.id, assetId: r.asset_id }]));
-  for (const code of unique) {
-    if (!map.has(code)) {
-      throw new DomainError('unknown_ledger_account', `Conta contábil inexistente: ${code}`, { code });
-    }
-  }
-  return map;
 }
 
 /**
- * Grava um lançamento. Deve ser chamada **dentro** de uma transação de banco
- * — quem chama controla o escopo, porque normalmente o lançamento precisa
- * ser atômico junto com a mudança de estado da transação de negócio.
+ * Grava um lançamento.
+ *
+ * Estrutura obrigatória por causa do Firestore: **todas as leituras primeiro,
+ * depois todas as escritas**. Ler o saldo depois de já ter escrito é recusado
+ * pelo SDK — e é por isso que a validação de saldo acontece inteira em
+ * memória, entre as duas fases.
  */
-export async function postEntries(tx: Queryable, req: PostingRequest): Promise<PostingResult> {
+export async function postEntries(db: Db, req: PostingRequest): Promise<PostingResult> {
   validate(req);
 
-  const existing = await tx.query<{ id: string; uid: string }>(
-    'SELECT id, uid FROM ledger_transactions WHERE idempotency_key = $1',
-    [req.idempotencyKey],
-  );
-  if (existing.rows[0]) {
-    return { ledgerTxId: existing.rows[0].id, uid: existing.rows[0].uid, deduplicated: true };
-  }
+  const ledgerTxDocId = ledgerTransactionId(req.idempotencyKey);
 
-  const accounts = await accountIdsFor(tx, req.legs.map((l) => l.accountCode));
+  return db.runTransaction(async (tx) => {
+    const ledgerTxRef = db.doc(`${COLLECTIONS.ledgerTransactions}/${ledgerTxDocId}`);
 
-  let ledgerTxId: string;
-  let uid: string;
-  try {
-    const inserted = await tx.query<{ id: string; uid: string }>(
-      `INSERT INTO ledger_transactions (idempotency_key, transaction_id, description, actor)
-       VALUES ($1, $2, $3, $4) RETURNING id, uid`,
-      [req.idempotencyKey, req.transactionId ?? null, req.description, req.actor],
+    // ---------------------------------------------------------------- LEITURA
+    const existing = await tx.get<LedgerTransactionDoc>(ledgerTxRef);
+    if (existing) {
+      return { ledgerTxId: ledgerTxDocId, deduplicated: true };
+    }
+
+    const uniqueCodes = [...new Set(req.legs.map((l) => l.accountCode))];
+    const accountRefs = uniqueCodes.map((code) =>
+      db.doc(`${COLLECTIONS.ledgerAccounts}/${ledgerAccountId(code)}`),
     );
-    ledgerTxId = inserted.rows[0]!.id;
-    uid = inserted.rows[0]!.uid;
-  } catch (err) {
-    if (isUniqueViolation(err)) {
-      // Outra requisição ganhou a corrida entre o SELECT e o INSERT. Isso é
-      // exatamente o que a idempotência existe para tornar inofensivo.
-      const raced = await tx.query<{ id: string; uid: string }>(
-        'SELECT id, uid FROM ledger_transactions WHERE idempotency_key = $1',
-        [req.idempotencyKey],
-      );
-      if (raced.rows[0]) {
-        return { ledgerTxId: raced.rows[0].id, uid: raced.rows[0].uid, deduplicated: true };
+    const accountDocs = await tx.getAll<LedgerAccountDoc>(accountRefs);
+
+    const accounts = new Map<string, LedgerAccountDoc>();
+    uniqueCodes.forEach((code, i) => {
+      const doc = accountDocs[i];
+      if (!doc) {
+        throw new DomainError('unknown_ledger_account', `Conta contábil inexistente: ${code}`, { code });
+      }
+      accounts.set(code, doc);
+    });
+
+    // ------------------------------------------------------------- VALIDAÇÃO
+    // A perna precisa ser do mesmo ativo da conta que ela movimenta.
+    for (const leg of req.legs) {
+      const account = accounts.get(leg.accountCode)!;
+      if (account.assetCode !== leg.asset) {
+        throw new LedgerInvariantError(
+          `Lançamento em ${leg.asset} numa conta de ${account.assetCode} (${leg.accountCode})`,
+          { accountCode: leg.accountCode, legAsset: leg.asset, accountAsset: account.assetCode },
+        );
       }
     }
-    throw err;
-  }
 
-  for (const leg of req.legs) {
-    const account = accounts.get(leg.accountCode)!;
-    await tx.query(
-      `INSERT INTO ledger_entries (ledger_tx_id, account_id, asset_id, side, amount)
-       VALUES ($1, $2, $3, $4, $5)`,
-      [ledgerTxId, account.id, account.assetId, leg.side, leg.amount.toString()],
-    );
-  }
+    const newBalances = new Map<string, bigint>();
+    for (const code of uniqueCodes) {
+      newBalances.set(code, accounts.get(code)!.balance);
+    }
+    for (const leg of req.legs) {
+      const delta = leg.side === 'debit' ? leg.amount : -leg.amount;
+      newBalances.set(leg.accountCode, newBalances.get(leg.accountCode)! + delta);
+    }
 
-  return { ledgerTxId, uid, deduplicated: false };
+    // Saldo negativo de usuário: o que antes era trigger, agora é esta checagem.
+    for (const [code, balance] of newBalances) {
+      const account = accounts.get(code)!;
+      if (USER_ACCOUNT_KINDS.has(account.kind) && balance < 0n) {
+        throw new LedgerInvariantError(
+          `Saldo negativo bloqueado na conta ${code} (resultaria em ${balance})`,
+          { accountCode: code, resultingBalance: balance.toString() },
+        );
+      }
+      assertFitsInt64(balance, `balance(${code})`);
+    }
+
+    // --------------------------------------------------------------- ESCRITA
+    const now = new Date();
+
+    const ledgerTx: LedgerTransactionDoc = {
+      idempotencyKey: req.idempotencyKey,
+      transactionId: req.transactionId ?? null,
+      description: req.description,
+      actor: req.actor,
+      createdAt: now,
+    };
+    // `create` (não `set`): se outra transação criou este documento no meio do
+    // caminho, o Firestore aborta e reexecuta — e a releitura acima devolve
+    // `deduplicated`. É a constraint UNIQUE do ledger.
+    tx.create(ledgerTxRef, ledgerTx as unknown as Record<string, unknown>);
+
+    // O saldo após cada perna é gravado no lançamento: é a trilha que permite
+    // à conciliação apontar exatamente onde a projeção divergiu.
+    const running = new Map<string, bigint>();
+    for (const code of uniqueCodes) running.set(code, accounts.get(code)!.balance);
+
+    req.legs.forEach((leg, index) => {
+      const delta = leg.side === 'debit' ? leg.amount : -leg.amount;
+      const after = running.get(leg.accountCode)! + delta;
+      running.set(leg.accountCode, after);
+
+      const entry: LedgerEntryDoc = {
+        ledgerTxId: ledgerTxDocId,
+        accountCode: leg.accountCode,
+        assetCode: leg.asset,
+        side: leg.side,
+        amount: leg.amount,
+        balanceAfter: after,
+        createdAt: now,
+      };
+      // ID determinístico a partir da chave de idempotência: se a transação
+      // for reexecutada pelo Firestore, os mesmos documentos são reescritos,
+      // não duplicados.
+      const entryRef = db.doc(`${COLLECTIONS.ledgerEntries}/${ledgerTxDocId}__${index}`);
+      tx.create(entryRef, entry as unknown as Record<string, unknown>);
+    });
+
+    for (const [code, balance] of newBalances) {
+      const account = accounts.get(code)!;
+      const legsForAccount = req.legs.filter((l) => l.accountCode === code).length;
+      tx.update(db.doc(`${COLLECTIONS.ledgerAccounts}/${ledgerAccountId(code)}`), {
+        balance,
+        entryCount: account.entryCount + BigInt(legsForAccount),
+        updatedAt: now,
+      });
+    }
+
+    return { ledgerTxId: ledgerTxDocId, deduplicated: false };
+  });
 }
 
 /**
- * Saldo de uma conta, calculado a partir dos lançamentos.
+ * Saldo de uma conta, direto da projeção mantida transacionalmente.
  *
- * Nunca lê a tabela `balances` — aquilo é cache. Saldo exibido ao usuário e
- * saldo usado para autorizar débito vêm daqui.
+ * Não é cache preguiçoso: é escrita na mesma transação dos lançamentos.
+ * Para recomputar a partir dos lançamentos — que é o que detecta divergência
+ * — use `reconcileAccount` em balances.ts.
  */
-export async function balanceOf(tx: Queryable, accountCode: string): Promise<bigint> {
-  const { rows } = await tx.query<{ balance: string }>(
-    `SELECT COALESCE(SUM(CASE WHEN e.side = 'debit' THEN e.amount ELSE -e.amount END), 0)::TEXT AS balance
-     FROM ledger_accounts a
-     LEFT JOIN ledger_entries e ON e.account_id = a.id
-     WHERE a.code = $1
-     GROUP BY a.id`,
-    [accountCode],
-  );
-  if (!rows[0]) {
+export async function balanceOf(db: Db, accountCode: string): Promise<bigint> {
+  const snap = await db.doc(`${COLLECTIONS.ledgerAccounts}/${ledgerAccountId(accountCode)}`).get();
+  if (!snap.exists) {
     throw new DomainError('unknown_ledger_account', `Conta contábil inexistente: ${accountCode}`);
   }
-  return BigInt(rows[0].balance);
+  return (snap.data() as LedgerAccountDoc).balance;
 }
 
 /**
- * Trava a conta e devolve o saldo. **Este é o passo que impede gasto duplo.**
+ * Débito com verificação de saldo.
  *
- * O `FOR UPDATE` serializa as requisições concorrentes que debitam a mesma
- * conta: a segunda espera a primeira commitar e então recalcula, vendo o
- * saldo já reduzido.
- */
-export async function lockAndReadBalance(tx: Queryable, accountCode: string): Promise<bigint> {
-  const locked = await tx.query<{ id: string }>(
-    'SELECT id FROM ledger_accounts WHERE code = $1 FOR UPDATE',
-    [accountCode],
-  );
-  if (!locked.rows[0]) {
-    throw new DomainError('unknown_ledger_account', `Conta contábil inexistente: ${accountCode}`);
-  }
-  return balanceOf(tx, accountCode);
-}
-
-/**
- * Débito seguro: trava, confere saldo (incluindo taxas) e lança.
+ * `required` precisa ser o total que sai da conta — principal **mais** taxas.
+ * Conferir só o principal é o erro clássico que deixa a conta negativa quando
+ * a taxa é debitada.
  *
- * `required` precisa ser o total que sai da conta — principal + taxas.
- * Conferir só o principal é o erro clássico que deixa a conta negativa por
- * causa da taxa.
+ * A checagem de idempotência acontece dentro de `postEntries`, antes de
+ * qualquer validação de saldo. Isso é deliberado: no retry de uma operação já
+ * efetivada, o saldo já foi debitado, e verificar saldo antes de idempotência
+ * faria o retry falhar com "saldo insuficiente" numa operação que deu certo.
  */
 export async function postDebitWithBalanceCheck(
-  tx: Queryable,
+  db: Db,
   params: {
     debitAccount: string;
     required: bigint;
     asset: AssetCode;
-    posting: Omit<PostingRequest, 'legs'> & { legs: readonly Leg[] };
+    posting: PostingRequest;
   },
 ): Promise<PostingResult> {
-  // A checagem de idempotência vem ANTES do lock: um retry da mesma operação
-  // não deve nem disputar o lock, muito menos falhar por saldo insuficiente
-  // depois de já ter debitado na primeira tentativa.
-  const already = await tx.query<{ id: string; uid: string }>(
-    'SELECT id, uid FROM ledger_transactions WHERE idempotency_key = $1',
-    [params.posting.idempotencyKey],
-  );
-  if (already.rows[0]) {
-    return { ledgerTxId: already.rows[0].id, uid: already.rows[0].uid, deduplicated: true };
+  try {
+    return await postEntries(db, params.posting);
+  } catch (err) {
+    // Traduz a invariante de saldo negativo para o erro de domínio que a UI
+    // e os workers sabem tratar.
+    if (err instanceof LedgerInvariantError && err.details['accountCode'] === params.debitAccount) {
+      const available = await balanceOf(db, params.debitAccount).catch(() => 0n);
+      throw new InsufficientFundsError({
+        required: params.required.toString(),
+        available: available.toString(),
+        asset: params.asset,
+      });
+    }
+    throw err;
   }
-
-  const available = await lockAndReadBalance(tx, params.debitAccount);
-  if (available < params.required) {
-    throw new InsufficientFundsError({
-      required: params.required.toString(),
-      available: available.toString(),
-      asset: params.asset,
-    });
-  }
-
-  return postEntries(tx, params.posting);
 }
+
+export type { TxContext };

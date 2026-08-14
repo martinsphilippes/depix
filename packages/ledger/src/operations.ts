@@ -1,22 +1,16 @@
 /**
  * Operações contábeis de negócio.
  *
- * Cada função aqui é um lançamento nomeado, com a chave de idempotência
- * derivada da transação e da etapa. Isso importa mais do que parece: se o
- * worker de confirmação rodar duas vezes (e ele vai — filas entregam
- * at-least-once), a segunda execução produz a mesma chave e não credita
- * de novo.
+ * Cada função é um lançamento nomeado, com a chave de idempotência derivada
+ * da transação e da etapa. Isso importa mais do que parece: filas entregam
+ * at-least-once, então o worker de confirmação *vai* rodar duas vezes. Na
+ * segunda, a chave é a mesma e nada é creditado de novo.
  *
  * Convenção de sinal: **débito aumenta** a conta de ativo do usuário.
  */
 
-import {
-  type AssetCode,
-  type Money,
-  DomainError,
-  ledgerIdempotencyKey,
-} from '@depix/core';
-import type { Queryable } from '@depix/db';
+import { type Money, DomainError, ledgerIdempotencyKey } from '@depix/core';
+import type { Db } from '@depix/firestore';
 
 import { externalAccount, systemAccount, userAccount } from './accounts.ts';
 import { type Leg, type PostingResult, postDebitWithBalanceCheck, postEntries } from './posting.ts';
@@ -31,15 +25,15 @@ export interface OperationContext {
  * Entrada de valor no sistema, ainda não disponível.
  *
  * Usado quando o Pix foi recebido mas o DePix ainda não chegou na carteira.
- * O usuário vê "a caminho", não "disponível" — e não pode gastar.
+ * O usuário vê "a caminho" e não pode gastar.
  */
 export async function creditPendingIn(
-  tx: Queryable,
+  db: Db,
   ctx: OperationContext,
   amount: Money,
 ): Promise<PostingResult> {
   assertPositive(amount);
-  return postEntries(tx, {
+  return postEntries(db, {
     idempotencyKey: ledgerIdempotencyKey(ctx.transactionId, 'pending_in'),
     description: 'Entrada aguardando confirmação',
     actor: ctx.actor,
@@ -55,15 +49,15 @@ export async function creditPendingIn(
  * Confirmação da entrada: o valor vira saldo disponível.
  *
  * Só deve ser chamada por worker que verificou confirmação real — webhook
- * sozinho ou HTTP 200 não bastam (regra 43 dos requisitos).
+ * sozinho ou HTTP 200 não bastam.
  */
 export async function settlePendingIn(
-  tx: Queryable,
+  db: Db,
   ctx: OperationContext,
   amount: Money,
 ): Promise<PostingResult> {
   assertPositive(amount);
-  return postEntries(tx, {
+  return postEntries(db, {
     idempotencyKey: ledgerIdempotencyKey(ctx.transactionId, 'settle_in'),
     description: 'Entrada confirmada e disponível',
     actor: ctx.actor,
@@ -75,20 +69,15 @@ export async function settlePendingIn(
   });
 }
 
-/**
- * Crédito direto em disponível, sem etapa pendente.
- *
- * Caminho do DePix recebido on-chain com confirmações suficientes: quando a
- * transação já está confirmada, não há por que passar por pendente.
- */
+/** Crédito direto em disponível, para o que já chegou confirmado. */
 export async function creditAvailable(
-  tx: Queryable,
+  db: Db,
   ctx: OperationContext,
   amount: Money,
   step = 'credit',
 ): Promise<PostingResult> {
   assertPositive(amount);
-  return postEntries(tx, {
+  return postEntries(db, {
     idempotencyKey: ledgerIdempotencyKey(ctx.transactionId, step),
     description: 'Valor recebido',
     actor: ctx.actor,
@@ -104,20 +93,20 @@ export async function creditAvailable(
  * Reserva para envio. **É aqui que o gasto duplo é impedido.**
  *
  * O valor sai de `available` e vai para `pending_out` ANTES de qualquer
- * chamada de rede. Se o envio falhar depois, o estorno devolve — mas o
- * saldo nunca fica disponível durante a operação em voo.
+ * chamada de rede. Se o envio falhar depois, o estorno devolve — mas o saldo
+ * nunca fica disponível enquanto a operação está em voo.
  *
- * `total` precisa incluir as taxas. Reservar só o principal é o erro que
- * deixa a conta negativa quando a taxa é debitada.
+ * `total` precisa incluir as taxas.
  */
 export async function reserveForSend(
-  tx: Queryable,
+  db: Db,
   ctx: OperationContext,
   total: Money,
 ): Promise<PostingResult> {
   assertPositive(total);
   const available = userAccount(ctx.userId, total.asset, 'available');
-  return postDebitWithBalanceCheck(tx, {
+
+  return postDebitWithBalanceCheck(db, {
     debitAccount: available,
     required: total.amount,
     asset: total.asset,
@@ -137,11 +126,11 @@ export async function reserveForSend(
 /**
  * Liquidação do envio: a reserva sai do sistema e a taxa vira receita.
  *
- * Só deve ser chamada depois de confirmação real do envio (transação
- * confirmada na rede ou Pix liquidado pelo operador).
+ * Só depois de confirmação real (transação confirmada na rede ou Pix
+ * liquidado pelo operador).
  */
 export async function settleSend(
-  tx: Queryable,
+  db: Db,
   ctx: OperationContext,
   params: { principal: Money; platformFee: Money; providerFee: Money },
 ): Promise<PostingResult> {
@@ -158,16 +147,26 @@ export async function settleSend(
   ];
 
   // A taxa da plataforma é receita nossa; a do provider sai do sistema junto
-  // com o principal. Manter as duas separadas no ledger preserva a fronteira
-  // descrita em REGULATORY_ARCHITECTURE.md §2.3.
+  // com o principal. Separá-las no ledger preserva a fronteira descrita em
+  // REGULATORY_ARCHITECTURE.md §2.3.
   if (platformFee.amount > 0n) {
-    legs.push({ accountCode: systemAccount('fees', asset), side: 'debit', amount: platformFee.amount, asset });
+    legs.push({
+      accountCode: systemAccount('fees', asset),
+      side: 'debit',
+      amount: platformFee.amount,
+      asset,
+    });
   }
   if (providerFee.amount > 0n) {
-    legs.push({ accountCode: externalAccount(asset), side: 'debit', amount: providerFee.amount, asset });
+    legs.push({
+      accountCode: externalAccount(asset),
+      side: 'debit',
+      amount: providerFee.amount,
+      asset,
+    });
   }
 
-  return postEntries(tx, {
+  return postEntries(db, {
     idempotencyKey: ledgerIdempotencyKey(ctx.transactionId, 'settle_out'),
     description: 'Envio liquidado',
     actor: ctx.actor,
@@ -179,16 +178,15 @@ export async function settleSend(
 /**
  * Estorno da reserva quando o envio falha.
  *
- * Este é o caminho do cenário "falhou depois de debitar e antes de enviar",
- * que é teste obrigatório (requisitos §38). O valor volta a `available`.
+ * Caminho do cenário "falhou depois de debitar e antes de enviar".
  */
 export async function refundReservation(
-  tx: Queryable,
+  db: Db,
   ctx: OperationContext,
   total: Money,
 ): Promise<PostingResult> {
   assertPositive(total);
-  return postEntries(tx, {
+  return postEntries(db, {
     idempotencyKey: ledgerIdempotencyKey(ctx.transactionId, 'refund_reserve'),
     description: 'Estorno de reserva por falha no envio',
     actor: ctx.actor,
@@ -203,12 +201,12 @@ export async function refundReservation(
 /**
  * Ajuste administrativo.
  *
- * Admin não altera saldo por UPDATE — não existe esse caminho. Toda
+ * Admin não altera saldo por escrita direta — não existe esse caminho. Toda
  * correção passa por aqui, com motivo obrigatório, e aparece na conciliação
- * como o que é: um lançamento de ajuste (SECURITY.md §7).
+ * como o que é: um lançamento de ajuste.
  */
 export async function postAdjustment(
-  tx: Queryable,
+  db: Db,
   params: {
     userId: string;
     amount: Money;
@@ -226,38 +224,36 @@ export async function postAdjustment(
   const asset = params.amount.asset;
   const userAcc = userAccount(params.userId, asset, 'available');
   const adjustment = systemAccount('adjustment', asset);
+  const amount = params.amount.amount;
 
   const legs: Leg[] =
     params.direction === 'credit_user'
       ? [
-          { accountCode: userAcc, side: 'debit', amount: params.amount.amount, asset },
-          { accountCode: adjustment, side: 'credit', amount: params.amount.amount, asset },
+          { accountCode: userAcc, side: 'debit', amount, asset },
+          { accountCode: adjustment, side: 'credit', amount, asset },
         ]
       : [
-          { accountCode: adjustment, side: 'debit', amount: params.amount.amount, asset },
-          { accountCode: userAcc, side: 'credit', amount: params.amount.amount, asset },
+          { accountCode: adjustment, side: 'debit', amount, asset },
+          { accountCode: userAcc, side: 'credit', amount, asset },
         ];
 
-  if (params.direction === 'debit_user') {
-    return postDebitWithBalanceCheck(tx, {
-      debitAccount: userAcc,
-      required: params.amount.amount,
-      asset,
-      posting: {
-        idempotencyKey: params.idempotencyKey,
-        description: `Ajuste administrativo: ${params.reason}`,
-        actor: `admin:${params.adminId}`,
-        legs,
-      },
-    });
-  }
-
-  return postEntries(tx, {
+  const posting = {
     idempotencyKey: params.idempotencyKey,
     description: `Ajuste administrativo: ${params.reason}`,
     actor: `admin:${params.adminId}`,
+    transactionId: null,
     legs,
-  });
+  };
+
+  if (params.direction === 'debit_user') {
+    return postDebitWithBalanceCheck(db, {
+      debitAccount: userAcc,
+      required: amount,
+      asset,
+      posting,
+    });
+  }
+  return postEntries(db, posting);
 }
 
 // ---------------------------------------------------------------------------
@@ -279,9 +275,10 @@ function assertSameAsset(...values: readonly Money[]): void {
   if (!first) return;
   for (const v of rest) {
     if (v.asset !== first.asset) {
-      throw new DomainError('asset_mismatch', `Ativos diferentes no lançamento: ${first.asset} e ${v.asset}`);
+      throw new DomainError(
+        'asset_mismatch',
+        `Ativos diferentes no lançamento: ${first.asset} e ${v.asset}`,
+      );
     }
   }
 }
-
-export type { AssetCode };

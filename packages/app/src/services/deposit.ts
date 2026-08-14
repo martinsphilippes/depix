@@ -2,8 +2,8 @@
  * Fluxo Pix → DePix.
  *
  * O ponto arquitetural que define este fluxo: o `destinationAddress` passado
- * ao operador é o endereço da carteira **do próprio usuário**. O DePix vai
- * do operador direto para ele; não passa por nós em momento nenhum. É o que
+ * ao operador é o endereço da carteira **do próprio usuário**. O DePix vai do
+ * operador direto para ele; não passa por nós em momento nenhum. É o que
  * torna a entrada non-custodial de ponta a ponta.
  *
  * Nenhuma etapa aqui conclui a transação por causa de uma resposta HTTP.
@@ -19,7 +19,14 @@ import {
   money,
   rescale,
 } from '@depix/core';
-import type { Queryable } from '@depix/db';
+import {
+  COLLECTIONS,
+  type Db,
+  type LiquidTransactionDoc,
+  type PixTransactionDoc,
+  e2eIndexId,
+  liquidTxId,
+} from '@depix/firestore';
 import { creditPendingIn, settlePendingIn } from '@depix/ledger';
 import type { DepixProvider } from '@depix/providers';
 
@@ -40,11 +47,11 @@ export interface DepositIntent {
 /**
  * Cria a cobrança Pix.
  *
- * A chave de idempotência é derivada de (usuário, valor, endereço), então
- * um duplo clique não gera duas cobranças.
+ * A chave de idempotência é derivada de (usuário, valor, endereço), então um
+ * duplo clique não gera duas cobranças.
  */
 export async function createDepositIntent(
-  tx: Queryable,
+  db: Db,
   deps: { provider: DepixProvider },
   params: {
     userId: string;
@@ -66,7 +73,7 @@ export async function createDepositIntent(
       address: params.destinationAddress,
     });
 
-  const { transaction, created } = await createTransaction(tx, {
+  const { transaction, created } = await createTransaction(db, {
     userId: params.userId,
     kind: 'pix_in_to_depix',
     assetCode: 'BRL',
@@ -74,31 +81,23 @@ export async function createDepositIntent(
     idempotencyKey,
     counterparty: params.destinationAddress,
     providerCode: deps.provider.info.code,
-    environment: deps.provider.info.environment,
   });
 
   if (!created) {
     // Retry: devolve a cobrança já criada em vez de emitir outra.
-    const existing = await tx.query<{
-      provider_ref: string;
-      qr_payload: string | null;
-      qr_image_url: string | null;
-      expires_at: Date | null;
-    }>(
-      `SELECT provider_ref, qr_payload, qr_image_url, expires_at
-       FROM pix_transactions WHERE transaction_id = $1`,
-      [transaction.id],
-    );
-    const row = existing.rows[0];
-    if (row?.qr_payload) {
-      return {
-        transactionId: transaction.id,
-        providerRef: row.provider_ref,
-        qrCopyPaste: row.qr_payload,
-        qrImageUrl: row.qr_image_url ?? undefined,
-        amountBrl: money('BRL', params.amountBrlCents),
-        expiresAt: row.expires_at ?? undefined,
-      };
+    const existing = await db.doc(`${COLLECTIONS.pixTransactions}/${transaction.id}`).get();
+    if (existing.exists) {
+      const pix = existing.data() as PixTransactionDoc;
+      if (pix.qrPayload) {
+        return {
+          transactionId: transaction.id,
+          providerRef: pix.providerRef,
+          qrCopyPaste: pix.qrPayload,
+          qrImageUrl: pix.qrImageUrl ?? undefined,
+          amountBrl: money('BRL', params.amountBrlCents),
+          expiresAt: pix.expiresAt ? toDate(pix.expiresAt) : undefined,
+        };
+      }
     }
   }
 
@@ -108,27 +107,27 @@ export async function createDepositIntent(
     idempotencyKey,
   });
 
-  await tx.query(
-    `INSERT INTO pix_transactions
-       (transaction_id, direction, provider_id, provider_ref, qr_payload, qr_image_url,
-        amount_cents, expires_at)
-     VALUES ($1, 'in',
-             (SELECT id FROM providers WHERE code = $2 AND environment = $3::env_kind LIMIT 1),
-             $4, $5, $6, $7, $8)
-     ON CONFLICT (transaction_id) DO NOTHING`,
-    [
-      transaction.id,
-      deps.provider.info.code,
-      deps.provider.info.environment,
-      quote.providerRef,
-      quote.qrCopyPaste,
-      quote.qrImageUrl ?? null,
-      params.amountBrlCents.toString(),
-      quote.expiresAt ?? null,
-    ],
-  );
+  const pixDoc: PixTransactionDoc = {
+    transactionId: transaction.id,
+    direction: 'in',
+    providerCode: deps.provider.info.code,
+    providerRef: quote.providerRef,
+    e2eId: null,
+    qrPayload: quote.qrCopyPaste,
+    qrImageUrl: quote.qrImageUrl ?? null,
+    pixKeyMasked: null,
+    amountCents: params.amountBrlCents,
+    expiresAt: quote.expiresAt ?? null,
+    paidAt: null,
+    createdAt: new Date(),
+  };
 
-  await transitionTransaction(tx, {
+  // O ID é o da transação: uma cobrança por transação, garantido pelo ID.
+  await db
+    .doc(`${COLLECTIONS.pixTransactions}/${transaction.id}`)
+    .set(pixDoc as unknown as Record<string, unknown>, { merge: true });
+
+  await transitionTransaction(db, {
     transactionId: transaction.id,
     to: 'WAITING_PAYMENT',
     actor: 'system',
@@ -149,11 +148,14 @@ export async function createDepositIntent(
  * O Pix foi pago (webhook validado + status confirmado no provider).
  *
  * Credita em **pendente**, não em disponível: o real chegou, mas o DePix
- * ainda não está na carteira do usuário. Ele vê "a caminho" e não pode
- * gastar.
+ * ainda não está na carteira do usuário.
+ *
+ * O `e2eId` é registrado num documento de índice cujo ID é o próprio
+ * EndToEndId — `create()` nele garante que o mesmo Pix nunca credite duas
+ * vezes, que era a constraint `UNIQUE (e2e_id)` do PostgreSQL.
  */
 export async function markPixReceived(
-  tx: Queryable,
+  db: Db,
   params: {
     transactionId: string;
     userId: string;
@@ -164,7 +166,29 @@ export async function markPixReceived(
 ): Promise<void> {
   const actor = params.actor ?? 'worker:deposit';
 
-  await transitionTransaction(tx, {
+  if (params.e2eId) {
+    // Antes de qualquer crédito. Se o mesmo Pix já foi processado, isto falha
+    // com ALREADY_EXISTS e nada é creditado.
+    await db
+      .doc(`${COLLECTIONS.e2eIndex}/${e2eIndexId(params.e2eId)}`)
+      .create({
+        e2eId: params.e2eId,
+        transactionId: params.transactionId,
+        createdAt: new Date(),
+      })
+      .catch((err: unknown) => {
+        if ((err as { code?: number }).code === 6) {
+          throw new DomainError(
+            'duplicate_e2e_id',
+            `Este Pix (EndToEndId ${params.e2eId}) já foi processado`,
+            { e2eId: params.e2eId },
+          );
+        }
+        throw err;
+      });
+  }
+
+  await transitionTransaction(db, {
     transactionId: params.transactionId,
     to: 'PIX_RECEIVED',
     actor: actor as never,
@@ -172,21 +196,19 @@ export async function markPixReceived(
   });
 
   if (params.e2eId) {
-    // UNIQUE em e2e_id: o mesmo Pix jamais credita duas vezes.
-    await tx.query('UPDATE pix_transactions SET e2e_id = $2, paid_at = now() WHERE transaction_id = $1', [
-      params.transactionId,
-      params.e2eId,
-    ]);
+    await db
+      .doc(`${COLLECTIONS.pixTransactions}/${params.transactionId}`)
+      .set({ e2eId: params.e2eId, paidAt: new Date() }, { merge: true });
   }
 
   const depix = rescale(money('BRL', params.amountBrlCents), 'DEPIX');
   await creditPendingIn(
-    tx,
+    db,
     { transactionId: params.transactionId, userId: params.userId, actor },
     depix,
   );
 
-  await transitionTransaction(tx, {
+  await transitionTransaction(db, {
     transactionId: params.transactionId,
     to: 'CONVERTING',
     actor: actor as never,
@@ -196,23 +218,22 @@ export async function markPixReceived(
 
 /** O operador emitiu o DePix e transmitiu a transação na Liquid. */
 export async function markDepixSent(
-  tx: Queryable,
+  db: Db,
   params: { transactionId: string; liquidTxid: string; actor?: string },
 ): Promise<void> {
   const actor = (params.actor ?? 'worker:deposit') as never;
 
-  await tx.query('UPDATE depix_transactions SET liquid_txid = $2 WHERE transaction_id = $1', [
-    params.transactionId,
-    params.liquidTxid,
-  ]);
+  await db
+    .doc(`${COLLECTIONS.depixTransactions}/${params.transactionId}`)
+    .set({ liquidTxid: params.liquidTxid }, { merge: true });
 
-  await transitionTransaction(tx, {
+  await transitionTransaction(db, {
     transactionId: params.transactionId,
     to: 'DEPIX_SENT',
     actor,
     reason: `transmitido na Liquid: ${params.liquidTxid}`,
   });
-  await transitionTransaction(tx, {
+  await transitionTransaction(db, {
     transactionId: params.transactionId,
     to: 'CONFIRMING',
     actor,
@@ -224,11 +245,11 @@ export async function markDepixSent(
  * Conclusão. **Único caminho para `COMPLETED` neste fluxo.**
  *
  * Exige: asset ID conferido byte a byte, confirmações suficientes e valor
- * batendo com o esperado. Qualquer divergência vai para revisão manual em
- * vez de creditar.
+ * batendo com o esperado. Qualquer divergência vai para revisão manual em vez
+ * de creditar.
  */
 export async function confirmDepositOnChain(
-  tx: Queryable,
+  db: Db,
   params: {
     transactionId: string;
     userId: string;
@@ -248,8 +269,8 @@ export async function confirmDepositOnChain(
   // 1. O ativo é mesmo DePix? Ticker é texto livre na Liquid.
   try {
     assertLiquidAssetIs('DEPIX', params.observed.liquidAssetId);
-  } catch (err) {
-    await flagForReview(tx, {
+  } catch {
+    await flagForReview(db, {
       transactionId: params.transactionId,
       actor: actor as never,
       reason: `asset ID divergente: ${params.observed.liquidAssetId}`,
@@ -265,7 +286,7 @@ export async function confirmDepositOnChain(
   // 3. O valor bate? Divergência nunca vira crédito automático.
   const expected = rescale(money('BRL', params.expectedAmountBrlCents), 'DEPIX');
   if (params.observed.amount !== expected.amount) {
-    await flagForReview(tx, {
+    await flagForReview(db, {
       transactionId: params.transactionId,
       actor: actor as never,
       reason: `valor divergente: esperado ${expected.amount}, observado ${params.observed.amount}`,
@@ -273,28 +294,35 @@ export async function confirmDepositOnChain(
     return { completed: false, reason: 'amount_mismatch' };
   }
 
-  await tx.query(
-    `INSERT INTO liquid_transactions
-       (transaction_id, txid, vout, asset_liquid_id, amount, direction, confirmations, confirmed_at)
-     VALUES ($1, $2, $3, $4, $5, 'in', $6, now())
-     ON CONFLICT (txid, vout, direction) DO NOTHING`,
-    [
-      params.transactionId,
-      params.observed.txid,
-      params.observed.vout ?? 0,
-      params.observed.liquidAssetId.toLowerCase(),
-      params.observed.amount.toString(),
-      params.observed.confirmations,
-    ],
-  );
+  const vout = params.observed.vout ?? 0;
+  const liquidDoc: LiquidTransactionDoc = {
+    transactionId: params.transactionId,
+    walletId: null,
+    txid: params.observed.txid,
+    vout,
+    assetLiquidId: params.observed.liquidAssetId.toLowerCase(),
+    amount: params.observed.amount,
+    direction: 'in',
+    address: null,
+    feeLbtc: null,
+    blockHeight: null,
+    confirmations: params.observed.confirmations,
+    confirmedAt: new Date(),
+    createdAt: new Date(),
+  };
+
+  // ID composto (txid, vout, direction): o mesmo UTXO nunca credita 2x.
+  await db
+    .doc(`${COLLECTIONS.liquidTransactions}/${liquidTxId(params.observed.txid, vout, 'in')}`)
+    .set(liquidDoc as unknown as Record<string, unknown>, { merge: true });
 
   await settlePendingIn(
-    tx,
+    db,
     { transactionId: params.transactionId, userId: params.userId, actor },
     expected,
   );
 
-  await transitionTransaction(tx, {
+  await transitionTransaction(db, {
     transactionId: params.transactionId,
     to: 'COMPLETED',
     actor: actor as never,
@@ -302,4 +330,8 @@ export async function confirmDepositOnChain(
   });
 
   return { completed: true };
+}
+
+function toDate(value: Date | { toDate(): Date }): Date {
+  return value instanceof Date ? value : value.toDate();
 }

@@ -2,14 +2,26 @@
  * Extrato unificado.
  *
  * Uma única lista com Pix e DePix, entrada e saída — o usuário não deveria
- * precisar saber que existem dois trilhos por baixo (requisitos §32).
+ * precisar saber que existem dois trilhos por baixo.
  *
  * ⚠️ Esta view é para **exibição**. Saldo nunca é calculado somando estas
- * linhas: vem do ledger (requisitos §13).
+ * linhas: vem do ledger.
+ *
+ * Nota sobre o Firestore: onde havia um `LEFT JOIN LATERAL` no SQL, aqui é
+ * preciso buscar os detalhes por trilho em consultas separadas e juntar em
+ * memória. Fazemos isso em lote (uma query por trilho para a página inteira),
+ * não uma por transação — o padrão N+1 seria caro e lento.
  */
 
 import { type TxKind, type TxStatus, formatBRL, money, rescale, userFacingLabel } from '@depix/core';
-import type { Queryable } from '@depix/db';
+import {
+  COLLECTIONS,
+  type Db,
+  type LiquidTransactionDoc,
+  type PixTransactionDoc,
+  type TransactionDoc,
+  asNumberOrNull,
+} from '@depix/firestore';
 
 export type HistoryDirection = 'in' | 'out';
 
@@ -20,14 +32,13 @@ export interface HistoryItem {
   readonly statusLabel: string;
   readonly direction: HistoryDirection;
   readonly title: string;
-  /** Valor em BRL para exibição, já formatado. */
   readonly amountLabel: string;
   readonly amountBrlCents: bigint;
   readonly feeBrlCents: bigint;
   readonly counterparty: string | null;
   readonly createdAt: Date;
   readonly completedAt: Date | null;
-  /** Só preenchido no modo avançado. */
+  /** Só exibido no modo avançado. */
   readonly technical: {
     readonly txid: string | null;
     readonly e2eId: string | null;
@@ -64,7 +75,6 @@ export interface HistoryFilter {
   readonly kinds?: readonly TxKind[];
   readonly statuses?: readonly TxStatus[];
   readonly limit?: number;
-  readonly offset?: number;
 }
 
 /** Períodos prontos da UI: Hoje, 7 dias, 30 dias, Mês. */
@@ -83,109 +93,137 @@ export function periodRange(
       return { from: new Date(now.getTime() - 7 * 86_400_000), to };
     case '30d':
       return { from: new Date(now.getTime() - 30 * 86_400_000), to };
-    case 'month': {
-      const from = new Date(now.getFullYear(), now.getMonth(), 1, 0, 0, 0, 0);
-      return { from, to };
-    }
+    case 'month':
+      return { from: new Date(now.getFullYear(), now.getMonth(), 1, 0, 0, 0, 0), to };
   }
 }
 
-interface HistoryRow {
-  id: string;
-  kind: TxKind;
-  status: TxStatus;
-  asset_code: string;
-  amount: string;
-  platform_fee: string;
-  provider_fee: string;
-  counterparty: string | null;
-  created_at: Date;
-  completed_at: Date | null;
-  txid: string | null;
-  confirmations: number | null;
-  e2e_id: string | null;
-  provider_ref: string | null;
+export async function listHistory(db: Db, filter: HistoryFilter): Promise<HistoryItem[]> {
+  const limit = Math.min(filter.limit ?? 50, 200);
+
+  let query = db
+    .collection(COLLECTIONS.transactions)
+    .where('userId', '==', filter.userId)
+    .orderBy('createdAt', 'desc');
+
+  if (filter.from) query = query.where('createdAt', '>=', filter.from);
+  if (filter.to) query = query.where('createdAt', '<=', filter.to);
+  if (filter.kinds?.length) query = query.where('kind', 'in', [...filter.kinds]);
+  if (filter.statuses?.length) query = query.where('status', 'in', [...filter.statuses]);
+
+  const snap = await query.limit(limit).get();
+  if (snap.empty) return [];
+
+  const transactions = snap.docs.map((d) => ({ id: d.id, doc: d.data() as TransactionDoc }));
+  const ids = transactions.map((t) => t.id);
+
+  // Detalhes por trilho, em lote. Uma query por trilho para a página inteira
+  // — nunca uma por transação.
+  const [pixByTx, liquidByTx] = await Promise.all([
+    fetchPixDetails(db, ids),
+    fetchLiquidDetails(db, ids),
+  ]);
+
+  return transactions.map(({ id, doc }) =>
+    toHistoryItem(id, doc, pixByTx.get(id), liquidByTx.get(id)),
+  );
 }
 
-export async function listHistory(tx: Queryable, filter: HistoryFilter): Promise<HistoryItem[]> {
-  const limit = Math.min(filter.limit ?? 50, 200);
-  const offset = filter.offset ?? 0;
+async function fetchPixDetails(
+  db: Db,
+  transactionIds: readonly string[],
+): Promise<Map<string, PixTransactionDoc>> {
+  const out = new Map<string, PixTransactionDoc>();
+  if (transactionIds.length === 0) return out;
 
-  const { rows } = await tx.query<HistoryRow>(
-    `SELECT t.id, t.kind, t.status, a.code AS asset_code,
-            t.amount::TEXT, t.platform_fee::TEXT, t.provider_fee::TEXT,
-            t.counterparty, t.created_at, t.completed_at,
-            lt.txid, lt.confirmations,
-            pt.e2e_id,
-            COALESCE(pt.provider_ref, dt.provider_ref) AS provider_ref
-     FROM transactions t
-     JOIN assets a ON a.id = t.asset_id
-     LEFT JOIN LATERAL (
-       SELECT txid, confirmations FROM liquid_transactions
-       WHERE transaction_id = t.id ORDER BY created_at DESC LIMIT 1
-     ) lt ON TRUE
-     LEFT JOIN pix_transactions pt ON pt.transaction_id = t.id
-     LEFT JOIN depix_transactions dt ON dt.transaction_id = t.id
-     WHERE t.user_id = $1
-       AND ($2::timestamptz IS NULL OR t.created_at >= $2)
-       AND ($3::timestamptz IS NULL OR t.created_at <= $3)
-       AND ($4::text[] IS NULL OR t.kind::text = ANY($4))
-       AND ($5::text[] IS NULL OR t.status::text = ANY($5))
-     ORDER BY t.created_at DESC
-     LIMIT $6 OFFSET $7`,
-    [
-      filter.userId,
-      filter.from ?? null,
-      filter.to ?? null,
-      filter.kinds ? [...filter.kinds] : null,
-      filter.statuses ? [...filter.statuses] : null,
-      limit,
-      offset,
-    ],
+  // O ID do documento de pixTransactions é o próprio transactionId.
+  const refs = transactionIds.map((id) => db.doc(`${COLLECTIONS.pixTransactions}/${id}`));
+  const snaps = await db.fs.getAll(...refs);
+  for (const snap of snaps) {
+    if (snap.exists) out.set(snap.id, snap.data() as PixTransactionDoc);
+  }
+  return out;
+}
+
+async function fetchLiquidDetails(
+  db: Db,
+  transactionIds: readonly string[],
+): Promise<Map<string, LiquidTransactionDoc>> {
+  const out = new Map<string, LiquidTransactionDoc>();
+  if (transactionIds.length === 0) return out;
+
+  // `in` aceita no máximo 30 valores por query; fatiar mantém a busca em
+  // lote sem estourar o limite.
+  const chunks: string[][] = [];
+  for (let i = 0; i < transactionIds.length; i += 30) {
+    chunks.push([...transactionIds.slice(i, i + 30)]);
+  }
+
+  const results = await Promise.all(
+    chunks.map((chunk) =>
+      db.collection(COLLECTIONS.liquidTransactions).where('transactionId', 'in', chunk).get(),
+    ),
   );
 
-  return rows.map(toHistoryItem);
+  for (const snap of results) {
+    for (const doc of snap.docs) {
+      const data = doc.data() as LiquidTransactionDoc;
+      if (data.transactionId) out.set(data.transactionId, data);
+    }
+  }
+  return out;
 }
 
-function toHistoryItem(row: HistoryRow): HistoryItem {
-  const amount = BigInt(row.amount);
-  const fee = BigInt(row.platform_fee) + BigInt(row.provider_fee);
+function toHistoryItem(
+  id: string,
+  doc: TransactionDoc,
+  pix?: PixTransactionDoc,
+  liquid?: LiquidTransactionDoc,
+): HistoryItem {
+  const fee = doc.platformFee + doc.providerFee;
 
   // O extrato fala em reais, mesmo quando o ativo interno é DePix.
   const toBrlCents = (v: bigint): bigint =>
-    row.asset_code === 'BRL' ? v : rescale(money('DEPIX', v), 'BRL', 'floor').amount;
+    doc.assetCode === 'BRL' ? v : rescale(money('DEPIX', v), 'BRL', 'floor').amount;
 
-  const amountBrlCents = toBrlCents(amount);
-  const direction = DIRECTION_BY_KIND[row.kind];
+  const amountBrlCents = toBrlCents(doc.amount);
+  const direction = DIRECTION_BY_KIND[doc.kind];
 
   return {
-    transactionId: row.id,
-    kind: row.kind,
-    status: row.status,
-    statusLabel: userFacingLabel(row.status, row.kind),
+    transactionId: id,
+    kind: doc.kind,
+    status: doc.status,
+    statusLabel: userFacingLabel(doc.status, doc.kind),
     direction,
-    title: TITLE_BY_KIND[row.kind],
+    title: TITLE_BY_KIND[doc.kind],
     amountLabel: `${direction === 'in' ? '+' : '-'} ${formatBRL(money('BRL', amountBrlCents))}`,
     amountBrlCents,
     feeBrlCents: toBrlCents(fee),
-    counterparty: row.counterparty,
-    createdAt: row.created_at,
-    completedAt: row.completed_at,
+    counterparty: doc.counterparty,
+    createdAt: toDate(doc.createdAt),
+    completedAt: doc.completedAt ? toDate(doc.completedAt) : null,
     technical: {
-      txid: row.txid,
-      e2eId: row.e2e_id,
-      confirmations: row.confirmations,
-      providerRef: row.provider_ref,
-      assetCode: row.asset_code,
+      txid: liquid?.txid ?? null,
+      e2eId: pix?.e2eId ?? null,
+      // `asNumberOrNull` porque contador lido do Firestore volta como
+      // bigint, e bigint numa resposta HTTP faz JSON.stringify lançar.
+      confirmations: asNumberOrNull(liquid?.confirmations ?? null, 'confirmations'),
+      providerRef: pix?.providerRef ?? null,
+      assetCode: doc.assetCode,
     },
   };
 }
 
 /** Remove os campos técnicos quando o modo avançado está desligado. */
-export function forDisplay(item: HistoryItem, advancedMode: boolean): Omit<HistoryItem, 'technical'> & {
-  technical?: HistoryItem['technical'];
-} {
+export function forDisplay(
+  item: HistoryItem,
+  advancedMode: boolean,
+): Omit<HistoryItem, 'technical'> & { technical?: HistoryItem['technical'] } {
   if (advancedMode) return item;
   const { technical: _omitted, ...rest } = item;
   return rest;
+}
+
+function toDate(value: Date | { toDate(): Date }): Date {
+  return value instanceof Date ? value : value.toDate();
 }

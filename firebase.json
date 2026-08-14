@@ -1,0 +1,17 @@
+{
+  "firestore": {
+    "rules": "firestore.rules",
+    "indexes": "firestore.indexes.json"
+  },
+  "emulators": {
+    "firestore": {
+      "host": "127.0.0.1",
+      "port": 8080
+    },
+    "ui": {
+      "enabled": false
+    },
+    "_comment": "singleProjectMode desligado de propósito: cada arquivo de teste usa um projectId próprio para ficar isolado dos demais, já que a suíte roda os arquivos em paralelo e cada um limpa a base antes de começar.",
+    "singleProjectMode": false
+  }
+}

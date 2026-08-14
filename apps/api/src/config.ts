@@ -2,9 +2,18 @@
  * Configuração e gate de ambiente.
  *
  * O gate é a implementação técnica da regra dos requisitos §34 e do
- * REGULATORY_ARCHITECTURE.md §7: fundos reais exigem intenção explícita,
- * e a aplicação **não sobe** se a configuração for perigosa. Falhar no
- * boot é muito melhor do que descobrir na primeira transação.
+ * REGULATORY_ARCHITECTURE.md §7: fundos reais exigem intenção explícita, e a
+ * aplicação **não sobe** se a configuração for perigosa.
+ *
+ * A migração para o Firebase acrescentou um risco que não existia com o
+ * PostgreSQL e que motiva duas checagens novas: com Firestore, a diferença
+ * entre "banco de brincadeira" e "banco de produção" é uma variável de
+ * ambiente. Apontar o desenvolvimento para o projeto real é fácil de fazer
+ * por acidente e destrutivo — a suíte de testes, por exemplo, apaga todos os
+ * documentos. Por isso:
+ *
+ *   • fora de produção, exigimos emulador **ou** confirmação explícita;
+ *   • em produção, o emulador é recusado.
  */
 
 import { DomainError } from '@depix/core';
@@ -12,7 +21,12 @@ import type { Environment } from '@depix/providers';
 
 export interface AppConfig {
   readonly environment: Environment;
-  readonly databaseUrl: string;
+  readonly firebase: {
+    readonly projectId: string;
+    /** Host do emulador. Ausente = projeto real. */
+    readonly emulatorHost?: string;
+    readonly databaseId?: string;
+  };
   readonly port: number;
   readonly ipHashSalt: string;
   readonly depix: {
@@ -37,9 +51,38 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     throw new DomainError('invalid_config', `APP_ENV inválido: ${environment}`);
   }
 
+  const projectId = required(env, 'FIREBASE_PROJECT_ID');
+  const emulatorHost = env['FIRESTORE_EMULATOR_HOST'];
   const providerCode = (env['DEPIX_PROVIDER'] ?? 'sandbox') as AppConfig['depix']['providerCode'];
   const apiKey = env['DEPIX_API_KEY'];
   const realFundsFlag = env['ENABLE_REAL_FUNDS'] === 'yes';
+
+  // --- Gate do Firestore ---------------------------------------------------
+  if (environment === 'production' && emulatorHost) {
+    throw new DomainError(
+      'emulator_in_production',
+      `FIRESTORE_EMULATOR_HOST definida (${emulatorHost}) com APP_ENV=production. ` +
+        'Nada seria persistido de verdade.',
+    );
+  }
+
+  if (environment !== 'production' && !emulatorHost && env['ALLOW_REAL_FIRESTORE'] !== 'yes') {
+    throw new DomainError(
+      'real_firestore_outside_production',
+      `APP_ENV=${environment} apontado para o projeto Firestore real "${projectId}" sem emulador. ` +
+        'Isso é quase sempre acidente e pode apagar ou corromper dados reais. ' +
+        'Use FIRESTORE_EMULATOR_HOST=127.0.0.1:8080, ou defina ALLOW_REAL_FIRESTORE=yes se for intencional.',
+    );
+  }
+
+  // Nome de projeto do emulador começa com "demo-" e não fala com o Google.
+  // Um projeto assim em produção significa que nada seria gravado.
+  if (environment === 'production' && projectId.startsWith('demo-')) {
+    throw new DomainError(
+      'demo_project_in_production',
+      `Projeto "${projectId}" é um projeto de demonstração e não persiste dados reais.`,
+    );
+  }
 
   // --- Gate de produção ----------------------------------------------------
   if (environment === 'production') {
@@ -78,16 +121,20 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
 
   return {
     environment,
-    databaseUrl: required(env, 'DATABASE_URL'),
+    firebase: {
+      projectId,
+      ...(emulatorHost ? { emulatorHost } : {}),
+      ...(env['FIRESTORE_DATABASE_ID'] ? { databaseId: env['FIRESTORE_DATABASE_ID'] } : {}),
+    },
     port: Number(env['PORT'] ?? 3001),
-    // Salt do hash de IP: sem ele, o hash é reversível por força bruta
-    // (o espaço de endereços IPv4 inteiro cabe numa tabela).
+    // Salt do hash de IP: sem ele, o hash é reversível por força bruta (o
+    // espaço de endereços IPv4 inteiro cabe numa tabela).
     ipHashSalt: required(env, 'IP_HASH_SALT'),
     depix: {
       providerCode,
-      apiKey,
-      webhookSecret: env['DEPIX_WEBHOOK_SECRET'],
-      baseUrl: env['DEPIX_BASE_URL'],
+      ...(apiKey ? { apiKey } : {}),
+      ...(env['DEPIX_WEBHOOK_SECRET'] ? { webhookSecret: env['DEPIX_WEBHOOK_SECRET'] } : {}),
+      ...(env['DEPIX_BASE_URL'] ? { baseUrl: env['DEPIX_BASE_URL'] } : {}),
     },
     realFundsEnabled: environment === 'production' && realFundsFlag,
   };
@@ -95,7 +142,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
 
 /** Banner de inicialização — deixa óbvio, no log, se há dinheiro real em jogo. */
 export function startupBanner(config: AppConfig): string {
+  const store = config.firebase.emulatorHost
+    ? `emulador(${config.firebase.emulatorHost})`
+    : `firestore(${config.firebase.projectId})`;
+
   return config.realFundsEnabled
-    ? `⚠️  PRODUÇÃO — FUNDOS REAIS · provider=${config.depix.providerCode}`
-    : `ambiente=${config.environment} · provider=${config.depix.providerCode} · sem fundos reais`;
+    ? `⚠️  PRODUÇÃO — FUNDOS REAIS · ${store} · provider=${config.depix.providerCode}`
+    : `ambiente=${config.environment} · ${store} · provider=${config.depix.providerCode} · sem fundos reais`;
 }

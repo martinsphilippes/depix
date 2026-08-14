@@ -1,7 +1,7 @@
 import { after, before, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { createTestDb, seedUser, type TestDb } from '@depix/db';
+import { createTestDb, seedUser, type TestDb } from '@depix/firestore';
 import { SandboxDepixProvider, signDepixWebhook } from '@depix/providers';
 import { createSession } from '@depix/app';
 
@@ -12,7 +12,7 @@ const ADDR = 'lq1qqw8jkm9xkxtjqfz7xm3dtxq9j7kqz2h8lm5xn4qz9v2r6t8y3u5w7e9r1t3y5u
 
 const config: AppConfig = {
   environment: 'development',
-  databaseUrl: 'unused',
+  firebase: { projectId: 'demo-depix-test-http', emulatorHost: '127.0.0.1:8080' },
   port: 0,
   ipHashSalt: 'salt',
   depix: { providerCode: 'sandbox', webhookSecret: 'whsec_test' },
@@ -26,12 +26,12 @@ let token: string;
 let userId: string;
 
 before(async () => {
-  db = await createTestDb();
+  db = await createTestDb('http');
   provider = new SandboxDepixProvider({ webhookSecret: 'whsec_test' });
   app = await buildServer({ config, db, depixProvider: provider });
 
   ({ userId } = await seedUser(db));
-  const created = await db.transaction((tx) => createSession(tx, { userId }));
+  const created = await createSession(db, { userId });
   token = created.token;
 });
 
@@ -49,7 +49,8 @@ describe('saúde', () => {
     const body = r.json();
     assert.equal(body.status, 'ok');
     assert.equal(body.realFunds, false);
-    assert.equal(body.checks.database, 'ok');
+    assert.equal(body.checks.firestore, 'ok');
+    assert.equal(body.emulated, true, 'deixa claro que está no emulador');
   });
 });
 
@@ -178,15 +179,20 @@ describe('webhook', () => {
     assert.equal(r.json().received, true);
 
     // Gravado e enfileirado — mas NÃO processado dentro do request.
-    const { rows } = await db.query<{ signature_ok: boolean; processed_at: Date | null }>(
-      'SELECT signature_ok, processed_at FROM webhook_events WHERE external_id = $1',
-      ['evt_http_1'],
+    const snap = await db
+      .collection('webhookEvents')
+      .where('externalId', '==', 'evt_http_1')
+      .get();
+    assert.equal(snap.size, 1);
+    assert.equal(snap.docs[0]!.data()['signatureOk'], true);
+    assert.equal(
+      snap.docs[0]!.data()['processedAt'],
+      null,
+      'processamento é assíncrono, fora do handler',
     );
-    assert.equal(rows[0]!.signature_ok, true);
-    assert.equal(rows[0]!.processed_at, null, 'processamento é assíncrono, fora do handler');
 
-    const jobs = await db.query('SELECT 1 FROM job_queue WHERE dedupe_key IS NOT NULL');
-    assert.ok(jobs.rows.length >= 1);
+    const jobs = await db.collection('jobQueue').get();
+    assert.ok(jobs.size >= 1, 'o trabalho foi enfileirado');
   });
 
   it('o corpo bruto sobrevive ao parser — assinatura confere sobre os bytes originais', async () => {
@@ -208,11 +214,15 @@ describe('webhook', () => {
 
     assert.equal(r.statusCode, 200, 'o corpo com espaçamento incomum precisa validar');
 
-    const { rows } = await db.query<{ raw_body: string }>(
-      'SELECT raw_body FROM webhook_events WHERE external_id = $1',
-      ['evt_http_espacado'],
+    const snap = await db
+      .collection('webhookEvents')
+      .where('externalId', '==', 'evt_http_espacado')
+      .get();
+    assert.equal(
+      snap.docs[0]!.data()['rawBody'],
+      espacado.toString(),
+      'os bytes originais são preservados',
     );
-    assert.equal(rows[0]!.raw_body, espacado.toString(), 'os bytes originais são preservados');
   });
 
   it('recusa assinatura inválida com 400 e registra a tentativa', async () => {
@@ -234,11 +244,12 @@ describe('webhook', () => {
     assert.equal(r.json().received, false);
 
     // A tentativa fica registrada: uma sequência dessas é sinal de ataque.
-    const { rows } = await db.query<{ signature_ok: boolean }>(
-      'SELECT signature_ok FROM webhook_events WHERE external_id = $1',
-      ['evt_forjado'],
-    );
-    assert.equal(rows[0]!.signature_ok, false);
+    const snap = await db
+      .collection('webhookEvents')
+      .where('externalId', '==', 'evt_forjado')
+      .get();
+    assert.equal(snap.size, 1);
+    assert.equal(snap.docs[0]!.data()['signatureOk'], false);
   });
 
   it('webhook duplicado responde 200 sem enfileirar de novo', async () => {
@@ -257,9 +268,44 @@ describe('webhook', () => {
     // 200 na duplicata é deliberado: um erro faria o provider reenviar.
     assert.equal(second.statusCode, 200);
 
-    const { rows } = await db.query<{ n: string }>(
-      "SELECT COUNT(*)::TEXT AS n FROM webhook_events WHERE external_id = 'evt_repetido'",
-    );
-    assert.equal(rows[0]!.n, '1');
+    const snap = await db
+      .collection('webhookEvents')
+      .where('externalId', '==', 'evt_repetido')
+      .get();
+    assert.equal(snap.size, 1);
+  });
+});
+
+describe('extrato pela API', () => {
+  it('nenhum bigint atravessa a fronteira HTTP', async () => {
+    // `JSON.stringify` lança em bigint. Como todo inteiro lido do Firestore
+    // volta como bigint, uma quantia deixada crua derrubaria a requisição —
+    // e só apareceria com valores reais em produção.
+    await app.inject({
+      method: 'POST',
+      url: '/pix/deposits',
+      headers: auth(),
+      payload: { amount: '123,45', destinationAddress: ADDR },
+    });
+
+    const r = await app.inject({ method: 'GET', url: '/history', headers: auth() });
+    assert.equal(r.statusCode, 200, 'a rota não pode falhar ao serializar');
+
+    const body = r.json();
+    assert.ok(body.items.length >= 1);
+
+    const item = body.items[0];
+    assert.equal(typeof item.amountBrlCents, 'string', 'quantia sai como string');
+    assert.equal(typeof item.feeBrlCents, 'string');
+    assert.equal(typeof item.createdAt, 'string');
+
+    // Varredura defensiva: nada no JSON pode ser bigint.
+    const varrer = (v: unknown, caminho: string): void => {
+      assert.notEqual(typeof v, 'bigint', `bigint encontrado em ${caminho}`);
+      if (v && typeof v === 'object') {
+        for (const [k, sub] of Object.entries(v)) varrer(sub, `${caminho}.${k}`);
+      }
+    };
+    varrer(body, 'body');
   });
 });

@@ -1,6 +1,6 @@
 {
   "name": "@depix/api",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
   "main": "./src/server.ts",
@@ -11,10 +11,9 @@
   "dependencies": {
     "@depix/app": "*",
     "@depix/core": "*",
-    "@depix/db": "*",
+    "@depix/firestore": "*",
     "@depix/ledger": "*",
     "@depix/providers": "*",
-    "fastify": "^5.2.0",
-    "pg": "^8.13.1"
+    "fastify": "^5.2.0"
   }
 }

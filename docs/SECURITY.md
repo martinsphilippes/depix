@@ -31,11 +31,11 @@ Nunca, em nenhum ambiente, nenhuma dessas coisas sai do dispositivo do usuário 
 - senha em texto puro
 - recovery secret
 
-**Enforcement:** teste de CI que varre o schema em busca de colunas com nomes suspeitos (`seed`, `mnemonic`, `xprv`, `privkey`, `private_key`) e falha o build se encontrar. Nenhum endpoint aceita esses campos no corpo da requisição — validação de schema rejeita antes do handler.
+**Enforcement:** teste de CI que varre os documentos gravados no Firestore em busca de campos com nomes suspeitos (`seed`, `mnemonic`, `xprv`, `privkey`, `private_key`, `blinding_key`) e falha o build se encontrar. Nenhum endpoint aceita esses campos no corpo da requisição.
 
 ### O que o servidor pode saber
 
-Apenas o **descriptor CT watch-only** (`wallets.ct_descriptor`): xpub + master blinding key, o suficiente para **ver** saldo e depósitos, insuficiente para **gastar**.
+Apenas o **descriptor CT watch-only** (`wallets.ctDescriptorEnc`): xpub + master blinding key, o suficiente para **ver** saldo e depósitos, insuficiente para **gastar**.
 
 > ⚠️ **Trade-off declarado honestamente:** a master blinding key desblinda os valores confidenciais do usuário. Quem tem acesso ao nosso banco vê os saldos e as transações desse usuário — não pode movê-los, mas vê. Esse é o preço de detectar depósitos e conciliar no servidor. A alternativa (detecção 100% no cliente) impede conciliação e monitoramento. Escolhemos ver-sem-poder-gastar, e o descriptor é cifrado em repouso (AES-256-GCM, chave em KMS/vault, nunca no código nem no `.env` de produção).
 
@@ -72,7 +72,7 @@ Bloqueio por conta **e** por IP — bloquear só por IP não protege contra botn
 
 | Vetor | Defesa |
 |---|---|
-| **SQL injection** | Queries parametrizadas exclusivamente. Concatenação de SQL com input é falha de build (lint), não de review |
+| **Injeção em query** | Não há SQL. Entrada de usuário nunca vira caminho de documento sem passar por `idComponent()`, que sanitiza e evita colisão de chave |
 | **XSS** | CSP restritiva sem `unsafe-inline`/`unsafe-eval`; escaping por padrão do framework; `dangerouslySetInnerHTML` proibido por lint |
 | **CSRF** | `SameSite=Strict` + token anti-CSRF em toda mutação; validação de `Origin` |
 | **Clickjacking** | `frame-ancestors 'none'` |
@@ -94,8 +94,8 @@ Ordem obrigatória, sem exceção:
 1. ler bytes BRUTOS do corpo (antes de qualquer parse)
 2. verificar HMAC-SHA256(secret, "{timestamp}.{raw_body}") — comparação em TEMPO CONSTANTE
 3. rejeitar timestamp fora da janela (anti-replay)
-4. gravar evento bruto em webhook_events (append-only), com signature_ok
-5. dedupe por (provider_id, X-DePix-Event-Id) — UNIQUE no banco
+4. gravar evento bruto em `webhookEvents`, com `signatureOk`
+5. dedupe pelo ID do documento (`providerCode__eventId`) — `create()` é a constraint
 6. responder 2xx rapidamente
 7. processar assíncrono na fila
 8. atualizar ledger com idempotency_key
@@ -114,7 +114,7 @@ Uma transação **jamais** vai para `COMPLETED` por causa de um HTTP 200 ou de u
 
 ### Segredos
 
-Em vault/variáveis de ambiente com rotação — nunca no repositório, nunca em `providers.config` (que é JSONB e guarda só configuração não-secreta). Chaves de produção (`sk_live_`) exigem a flag de liberação descrita em REGULATORY_ARCHITECTURE.md §7.
+Em vault/variáveis de ambiente com rotação — nunca no repositório, nunca em `providers.config` (que guarda só configuração não-secreta). Chaves de produção (`sk_live_`) exigem a flag de liberação descrita em REGULATORY_ARCHITECTURE.md §7.
 
 ---
 
@@ -124,35 +124,40 @@ Em vault/variáveis de ambiente com rotação — nunca no repositório, nunca e
 
 Cenário da seção 39 dos requisitos — R$ 100 de saldo, dois navegadores, R$ 100 em cada:
 
-```sql
-BEGIN;
-SELECT id FROM ledger_accounts
-  WHERE code = 'user:<id>:depix:available'
-  FOR UPDATE;                      -- serializa débitos da MESMA conta
--- recalcula saldo pelo ledger DENTRO da transação
--- saldo < valor + taxa  →  ROLLBACK
-INSERT INTO ledger_transactions (idempotency_key, ...) ...;   -- UNIQUE
-INSERT INTO ledger_entries ...;    -- available → pending_out
-COMMIT;
+```
+runTransaction:
+  ── LEITURA ──────────────────────────────────────────
+  ler ledgerTransactions/{chave}   → existe? devolve deduplicated, fim
+  ler as ledgerAccounts envolvidas
+
+  ── VALIDAÇÃO (em memória) ───────────────────────────
+  soma zero por ativo? saldo do usuário ficaria negativo? cabe em int64?
+
+  ── ESCRITA ──────────────────────────────────────────
+  create ledgerTransactions/{chave}   ← constraint de idempotência
+  create ledgerEntries/{chave}__{i}
+  update balance de cada conta
 ```
 
-O segundo navegador espera o lock, recalcula, vê saldo zero e falha. Defesa em profundidade: trigger de invariante que rejeita o commit se `user_available` ficaria negativa.
+Não há `FOR UPDATE`: a concorrência do Firestore é **otimista**. Se o saldo lido mudar antes do commit, a transação é reexecutada — e a segunda tentativa relê o saldo já debitado e falha por saldo insuficiente. O efeito para o gasto duplo é o mesmo; o mecanismo é diferente, e a diferença importa para quem for depurar.
+
+⚠️ **Sem trigger de defesa em profundidade.** No PostgreSQL, um trigger rejeitava o commit se o saldo ficasse negativo mesmo que a aplicação errasse. No Firestore isso não existe: a checagem vive em `packages/ledger/src/posting.ts` e a conciliação é o que detecta violação. Ver DATABASE.md §2.
 
 **Ordem obrigatória:** debitar no ledger **antes** de enviar. Falha no envio gera lançamento de estorno (`pending_out → available`) — nunca "esquecer" o débito. O caso "falhou depois de debitar e antes de enviar" é teste obrigatório (seção 38).
 
 ### Idempotência
 
-Toda operação financeira carrega `idempotency_key`, com constraint de banco:
+Toda operação financeira carrega uma chave de idempotência que **é o ID do documento** — `create()` falha com `ALREADY_EXISTS`, que é a mesma força de um `UNIQUE`:
 
-| Constraint | Impede |
+| Documento | Impede |
 |---|---|
-| `transactions (user_id, idempotency_key)` | Transação duplicada por duplo clique/retry |
-| `ledger_transactions.idempotency_key` | Lançamento duplicado |
-| `webhook_events (provider_id, external_id)` | Webhook duplicado |
-| `pix_transactions.e2e_id` | O mesmo Pix creditar duas vezes |
-| `liquid_transactions (txid, vout, direction)` | O mesmo UTXO creditar duas vezes |
+| `txIdempotencyIndex/{userId}__{key}` | Transação duplicada por duplo clique/retry |
+| `ledgerTransactions/{key}` | Lançamento duplicado |
+| `webhookEvents/{provider}__{eventId}` | Webhook duplicado |
+| `e2eIndex/{e2eId}` | O mesmo Pix creditar duas vezes |
+| `liquidTransactions/{txid}__{vout}__{dir}` | O mesmo UTXO creditar duas vezes |
 
-Idempotência garantida pelo **banco**, não por verificação em código — código tem race condition, constraint não.
+Idempotência garantida pelo **banco**, não por verificação em código — código tem race condition, `create()` não.
 
 ### Validação de asset e endereço
 
@@ -172,7 +177,7 @@ RBAC com quatro papéis: `viewer`, `operator`, `compliance`, `superadmin`. 2FA o
 
 **Admin não altera saldo.** Não existe endpoint, comando ou caminho de UI para "definir saldo". Toda correção é um lançamento na conta `system_adjustment` via `ledger_transactions`, exigindo motivo, operador, horário e referência — registrado em `audit_logs` e visível na conciliação.
 
-A role de banco da aplicação **não tem** permissão de `UPDATE`/`DELETE` em `ledger_entries` nem em `webhook_events`. Não é convenção — é permissão negada no Postgres.
+⚠️ **Mudou com o Firestore.** No PostgreSQL, a role da aplicação não tinha permissão de `UPDATE`/`DELETE` em `ledger_entries` — era permissão negada pelo banco. O Firestore não oferece equivalente: regras de segurança não se aplicam ao Admin SDK (verificado contra o emulador). A garantia passou a ser: nenhuma função de update/delete de lançamento existe em `packages/ledger`, e a conciliação recomputa os saldos a partir dos lançamentos para detectar qualquer escrita feita por fora. Ver DATABASE.md §2.
 
 Toda ação administrativa gera `audit_logs` com motivo obrigatório. Ações sensíveis (bloquear saque, alterar limite, desativar provider) exigem reautenticação.
 
@@ -250,5 +255,8 @@ O problema difícil da autocustódia: perder a seed é perder o dinheiro, e não
 - [ ] Pix rejeitado gera refund para `refundAddress`
 - [ ] Divergência de conciliação bloqueia e **não** dispara envio automático
 - [ ] Campo sensível não aparece em log (seed, CPF, chave Pix, `sk_live_`)
-- [ ] Nenhuma coluna de seed/chave privada existe no schema
+- [ ] Nenhum campo de seed/chave privada existe nos documentos gravados
+- [ ] Quantia acima de 2^53 faz round-trip exato (sem perda de precisão)
+- [ ] Nenhum bigint atravessa a fronteira HTTP (quebraria a serialização)
+- [ ] Conciliação DETECTA saldo adulterado por fora do ledger
 - [ ] Admin não consegue alterar saldo por nenhum caminho

@@ -1,13 +1,27 @@
 /**
- * Leitura de saldo para a aplicação.
+ * Leitura de saldo e conciliação.
  *
- * O saldo exibido na carteira sai daqui, e daqui sai do ledger. A tabela
- * `balances` é cache e só serve para leitura rápida em listagem — nunca
- * para autorizar um débito.
+ * A conciliação ganhou peso nesta migração. No PostgreSQL, um trigger
+ * impedia que a soma dos lançamentos divergisse do que a aplicação achava
+ * ser o saldo. No Firestore essa checagem não existe do lado do banco, então
+ * `reconcileAccount` — que recomputa o saldo a partir dos lançamentos e
+ * compara com a projeção — deixou de ser conferência periódica de rotina e
+ * passou a ser o mecanismo que **detecta** qualquer violação da invariante.
+ *
+ * Consequência operacional: essa rotina precisa rodar com frequência e ter
+ * alarme. Divergência aqui não é "ajustar o número"; é bug no caminho de
+ * escrita, e o valor certo é sempre o recomputado a partir dos lançamentos.
  */
 
-import { type AssetCode, type Money, money } from '@depix/core';
-import type { Queryable } from '@depix/db';
+import { AggregateField } from '@google-cloud/firestore';
+
+import { type AssetCode, type Money, DomainError, money } from '@depix/core';
+import {
+  COLLECTIONS,
+  type Db,
+  type LedgerAccountDoc,
+  ledgerAccountId,
+} from '@depix/firestore';
 
 import { userAccount } from './accounts.ts';
 
@@ -21,84 +35,149 @@ export interface WalletBalance {
   readonly pendingOut: Money;
 }
 
-/**
- * Saldos de um usuário para um ativo, direto dos lançamentos.
- *
- * Uma única query com agregação por tipo de conta: três round-trips para
- * montar a tela da carteira seria desperdício, e leitura fora de transação
- * poderia pegar estados inconsistentes entre si.
- */
 export async function walletBalance(
-  tx: Queryable,
+  db: Db,
   userId: string,
   asset: AssetCode,
 ): Promise<WalletBalance> {
-  const { rows } = await tx.query<{ code: string; balance: string }>(
-    `SELECT a.code,
-            COALESCE(SUM(CASE WHEN e.side = 'debit' THEN e.amount ELSE -e.amount END), 0)::TEXT AS balance
-     FROM ledger_accounts a
-     LEFT JOIN ledger_entries e ON e.account_id = a.id
-     WHERE a.code = ANY($1)
-     GROUP BY a.code`,
-    [
-      [
-        userAccount(userId, asset, 'available'),
-        userAccount(userId, asset, 'pending_in'),
-        userAccount(userId, asset, 'pending_out'),
-      ],
-    ],
+  const codes = ['available', 'pending_in', 'pending_out'] as const;
+  const refs = codes.map((suffix) =>
+    db.doc(`${COLLECTIONS.ledgerAccounts}/${ledgerAccountId(userAccount(userId, asset, suffix))}`),
   );
 
-  const byCode = new Map(rows.map((r) => [r.code, BigInt(r.balance)]));
-  const read = (suffix: 'available' | 'pending_in' | 'pending_out'): Money =>
-    money(asset, byCode.get(userAccount(userId, asset, suffix)) ?? 0n);
+  const snaps = await db.fs.getAll(...refs);
+  const read = (i: number): Money => {
+    const snap = snaps[i];
+    if (!snap?.exists) return money(asset, 0n);
+    return money(asset, (snap.data() as LedgerAccountDoc).balance);
+  };
 
   return {
     asset,
-    available: read('available'),
-    pendingIn: read('pending_in'),
-    pendingOut: read('pending_out'),
+    available: read(0),
+    pendingIn: read(1),
+    pendingOut: read(2),
+  };
+}
+
+export interface AccountReconciliation {
+  readonly accountCode: string;
+  /** Saldo na projeção mantida transacionalmente. */
+  readonly projected: bigint;
+  /** Saldo recomputado somando todos os lançamentos. */
+  readonly recomputed: bigint;
+  readonly entryCount: bigint;
+  readonly matches: boolean;
+  readonly delta: bigint;
+}
+
+/**
+ * Recomputa o saldo de uma conta a partir dos lançamentos.
+ *
+ * Esta é a verificação que substitui o trigger do PostgreSQL. Ela usa
+ * agregação do lado do servidor (`AggregateField.sum`), então não traz os
+ * lançamentos para a aplicação — o custo não cresce com o histórico da conta.
+ */
+export async function reconcileAccount(db: Db, accountCode: string): Promise<AccountReconciliation> {
+  const accountSnap = await db
+    .doc(`${COLLECTIONS.ledgerAccounts}/${ledgerAccountId(accountCode)}`)
+    .get();
+  if (!accountSnap.exists) {
+    throw new DomainError('unknown_ledger_account', `Conta contábil inexistente: ${accountCode}`);
+  }
+  const account = accountSnap.data() as LedgerAccountDoc;
+
+  const entries = db.collection(COLLECTIONS.ledgerEntries).where('accountCode', '==', accountCode);
+
+  const [debits, credits] = await Promise.all([
+    entries
+      .where('side', '==', 'debit')
+      .aggregate({ total: AggregateField.sum('amount'), n: AggregateField.count() })
+      .get(),
+    entries
+      .where('side', '==', 'credit')
+      .aggregate({ total: AggregateField.sum('amount'), n: AggregateField.count() })
+      .get(),
+  ]);
+
+  const recomputed = toBigInt(debits.data().total) - toBigInt(credits.data().total);
+  const entryCount = toBigInt(debits.data().n) + toBigInt(credits.data().n);
+
+  return {
+    accountCode,
+    projected: account.balance,
+    recomputed,
+    entryCount,
+    matches: recomputed === account.balance,
+    delta: account.balance - recomputed,
   };
 }
 
 /**
- * Verificação de integridade global: a soma de TODAS as contas, por ativo,
- * precisa ser zero. Num ledger de partidas dobradas isso é tautológico — e
- * é exatamente por isso que serve de alarme: se der diferente de zero,
- * algum lançamento entrou torto e há um bug.
+ * Verificação global: a soma de TODOS os lançamentos, por ativo, tem de ser
+ * zero.
+ *
+ * Num ledger de partidas dobradas isso é tautológico — e é justamente por
+ * isso que serve de alarme. Diferente de zero significa que algum lançamento
+ * entrou torto.
  */
 export async function assertGlobalBalance(
-  tx: Queryable,
-): Promise<{ assetCode: string; delta: bigint }[]> {
-  const { rows } = await tx.query<{ code: string; delta: string }>(
-    `SELECT ast.code,
-            COALESCE(SUM(CASE WHEN e.side = 'debit' THEN e.amount ELSE -e.amount END), 0)::TEXT AS delta
-     FROM assets ast
-     LEFT JOIN ledger_entries e ON e.asset_id = ast.id
-     GROUP BY ast.code`,
-  );
-  return rows
-    .map((r) => ({ assetCode: r.code, delta: BigInt(r.delta) }))
-    .filter((r) => r.delta !== 0n);
+  db: Db,
+  assets: readonly AssetCode[] = ['DEPIX', 'LBTC', 'BRL'],
+): Promise<{ assetCode: AssetCode; delta: bigint }[]> {
+  const divergences: { assetCode: AssetCode; delta: bigint }[] = [];
+
+  for (const asset of assets) {
+    const entries = db.collection(COLLECTIONS.ledgerEntries).where('assetCode', '==', asset);
+    const [debits, credits] = await Promise.all([
+      entries.where('side', '==', 'debit').aggregate({ total: AggregateField.sum('amount') }).get(),
+      entries.where('side', '==', 'credit').aggregate({ total: AggregateField.sum('amount') }).get(),
+    ]);
+
+    const delta = toBigInt(debits.data().total) - toBigInt(credits.data().total);
+    if (delta !== 0n) divergences.push({ assetCode: asset, delta });
+  }
+
+  return divergences;
 }
 
-/** Reconstrói o cache `balances` a partir do ledger. */
-export async function rebuildBalanceCache(tx: Queryable, walletId: string, userId: string): Promise<void> {
-  await tx.query(
-    `INSERT INTO balances (wallet_id, asset_id, amount, as_of_entry_id, updated_at)
-     SELECT $1::uuid,
-            a.asset_id,
-            COALESCE(SUM(CASE WHEN e.side = 'debit' THEN e.amount ELSE -e.amount END), 0),
-            COALESCE(MAX(e.id), 0),
-            now()
-     FROM ledger_accounts a
-     LEFT JOIN ledger_entries e ON e.account_id = a.id
-     WHERE a.owner_user_id = $2::uuid AND a.kind = 'user_available'
-     GROUP BY a.asset_id
-     ON CONFLICT (wallet_id, asset_id) DO UPDATE
-       SET amount = EXCLUDED.amount,
-           as_of_entry_id = EXCLUDED.as_of_entry_id,
-           updated_at = now()`,
-    [walletId, userId],
-  );
+/**
+ * Concilia todas as contas de um usuário.
+ *
+ * Retorna apenas as divergentes: lista vazia é o resultado esperado, e é o
+ * que o painel de conciliação mostra como "conciliado".
+ */
+export async function reconcileUser(
+  db: Db,
+  userId: string,
+  assets: readonly AssetCode[] = ['DEPIX', 'LBTC'],
+): Promise<AccountReconciliation[]> {
+  const codes: string[] = [];
+  for (const asset of assets) {
+    for (const suffix of ['available', 'pending_in', 'pending_out'] as const) {
+      codes.push(userAccount(userId, asset, suffix));
+    }
+  }
+
+  const results = await Promise.all(codes.map((code) => reconcileAccount(db, code)));
+  return results.filter((r) => !r.matches);
+}
+
+/**
+ * Com `useBigInt`, agregações voltam como `bigint`. O fallback existe porque
+ * `sum` de coleção vazia pode voltar como `0` numérico.
+ */
+function toBigInt(value: unknown): bigint {
+  if (typeof value === 'bigint') return value;
+  if (typeof value === 'number') {
+    if (!Number.isInteger(value)) {
+      throw new DomainError(
+        'aggregate_not_integer',
+        `Agregação devolveu valor não inteiro (${value}) — indica quantia gravada como float`,
+      );
+    }
+    return BigInt(value);
+  }
+  if (typeof value === 'string' && /^-?\d+$/.test(value)) return BigInt(value);
+  throw new DomainError('aggregate_unexpected_type', `Agregação devolveu tipo inesperado: ${typeof value}`);
 }

@@ -1,0 +1,100 @@
+{
+  "indexes": [
+    {
+      "_comment": "reconcileAccount: soma dos lançamentos por conta e lado. É a query que recomputa o saldo e detecta divergência da projeção.",
+      "collectionGroup": "ledgerEntries",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "accountCode", "order": "ASCENDING" },
+        { "fieldPath": "side", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "_comment": "assertGlobalBalance: soma por ativo e lado. Diferente de zero significa lançamento torto.",
+      "collectionGroup": "ledgerEntries",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "assetCode", "order": "ASCENDING" },
+        { "fieldPath": "side", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "_comment": "Extrato do usuário, mais recente primeiro.",
+      "collectionGroup": "transactions",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "userId", "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "_comment": "Extrato filtrado por tipo de operação.",
+      "collectionGroup": "transactions",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "userId", "order": "ASCENDING" },
+        { "fieldPath": "kind", "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "_comment": "Transações abertas, para o worker de expiração e a conciliação.",
+      "collectionGroup": "transactions",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "status", "order": "ASCENDING" },
+        { "fieldPath": "updatedAt", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "_comment": "Rate limiting: falhas recentes por sujeito (conta ou hash de IP).",
+      "collectionGroup": "authAttempts",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "subject", "order": "ASCENDING" },
+        { "fieldPath": "kind", "order": "ASCENDING" },
+        { "fieldPath": "succeeded", "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "_comment": "Regra de taxa vigente na data da operação.",
+      "collectionGroup": "feeRules",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "operation", "order": "ASCENDING" },
+        { "fieldPath": "activeFrom", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "_comment": "Sessões ativas de um usuário, para revogar tudo ao trocar senha/2FA.",
+      "collectionGroup": "sessions",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "userId", "order": "ASCENDING" },
+        { "fieldPath": "revokedAt", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "_comment": "Fila: trabalhos prontos para execução.",
+      "collectionGroup": "jobQueue",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "queue", "order": "ASCENDING" },
+        { "fieldPath": "completedAt", "order": "ASCENDING" },
+        { "fieldPath": "runAfter", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "_comment": "Webhooks recebidos e ainda não processados.",
+      "collectionGroup": "webhookEvents",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "signatureOk", "order": "ASCENDING" },
+        { "fieldPath": "processedAt", "order": "ASCENDING" },
+        { "fieldPath": "receivedAt", "order": "ASCENDING" }
+      ]
+    }
+  ],
+  "fieldOverrides": []
+}
