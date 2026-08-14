@@ -57,12 +57,24 @@ Sempre no dispositivo, via `lwk_wasm`. **Não existe endpoint de assinatura remo
 
 ### Rate limiting e força bruta
 
-| Endpoint | Limite |
-|---|---|
-| Login | 5 tentativas / 15 min por conta **e** por IP; backoff exponencial |
-| Recovery | 3 / hora |
-| Criação de transação | Alinhado ao provider (2/min por chave, 20/min por IP) |
-| Webhook recebido | Alto, mas com circuit breaker |
+Dois modos, porque são dois problemas diferentes:
+
+| Modo | Conta | Para quê |
+|---|---|---|
+| `failures` | só tentativas malsucedidas | força bruta — quem acertou a senha não é punido por ter errado antes |
+| `all` | toda tentativa | throttling de operação — impede cem cobranças por minuto e estourar o limite do próprio operador |
+
+| Endpoint | Limite | Modo |
+|---|---|---|
+| Login | 5 / 15 min | `failures` |
+| Recovery | 3 / hora | `failures` |
+| Criação de cobrança | 10 / min | `all` |
+| Preparo de envio | 10 / min | `all` |
+| Confirmação de transmissão | 20 / min | `all` |
+| Consulta de chave Pix | 20 / min | `all` |
+| Registro de carteira | 5 / hora | `all` |
+
+A tentativa é registrada **antes** de a operação executar: registrar só no sucesso permitiria disparar várias operações lentas em paralelo antes de a primeira contar.
 
 Bloqueio por conta **e** por IP — bloquear só por IP não protege contra botnet; bloquear só por conta permite DoS de conta alheia.
 

@@ -34,7 +34,15 @@ import {
 } from '@depix/providers';
 import {
   type HistoryItem,
+  type SessionRecord,
   createDepositIntent,
+  enforcePolicy,
+  evaluateSendPolicy,
+  hashIp,
+  isDeviceTrusted,
+  limitsSummary,
+  reauthThresholdLabel,
+  withRateLimit,
   enqueueConfirmation,
   getWalletStatus,
   ingestWebhook,
@@ -164,6 +172,31 @@ export async function buildServer(deps: ServerDeps): Promise<FastifyInstance> {
 
   const authed = { preHandler: authenticate };
 
+  /**
+   * Sujeitos do rate limiting: conta E IP.
+   *
+   * Só por IP não protege contra botnet; só por conta permite que um atacante
+   * tranque a conta alheia de propósito. O IP entra como hash com salt — sem
+   * o salt, o hash seria reversível por força bruta, já que o espaço de
+   * endereços IPv4 inteiro cabe numa tabela.
+   */
+  function rateSubjects(request: FastifyRequest): { accountSubject?: string; ipSubject?: string } {
+    const session = (request as FastifyRequest & { session?: SessionRecord }).session;
+    const ip = request.ip;
+    return {
+      ...(session ? { accountSubject: `user:${session.userId}` } : {}),
+      ...(ip ? { ipSubject: `ip:${hashIp(ip, deps.config.ipHashSalt)}` } : {}),
+    };
+  }
+
+  /**
+   * A reautenticação por passkey ainda não existe (a cerimônia WebAuthn é a
+   * próxima entrega). Enquanto for `false`, operações que disparam a política
+   * ficam **bloqueadas** em vez de liberadas — falhar fechado é o
+   * comportamento correto num sistema financeiro.
+   */
+  const REAUTH_AVAILABLE = false;
+
   // --- Saúde ----------------------------------------------------------------
   app.get('/health', async () => {
     const checks: Record<string, string> = {};
@@ -208,6 +241,17 @@ export async function buildServer(deps: ServerDeps): Promise<FastifyInstance> {
     };
   });
 
+  // Limites e política: o usuário deveria ver o limite antes de esbarrar nele.
+  app.get('/wallet/limits', authed, async (request) => {
+    const { userId } = sessionOf(request);
+    const summary = await limitsSummary(deps.db, userId);
+    return {
+      ...summary,
+      reauthThreshold: reauthThresholdLabel(),
+      reauthAvailable: REAUTH_AVAILABLE,
+    };
+  });
+
   // --- Registro da carteira -------------------------------------------------
   // O usuário gera as chaves no dispositivo e envia apenas o descriptor
   // watch-only. O servidor recusa qualquer coisa com cara de chave privada.
@@ -220,12 +264,17 @@ export async function buildServer(deps: ServerDeps): Promise<FastifyInstance> {
     }
     const network = body.network === 'mainnet' ? 'mainnet' : 'testnet';
 
-    const result = await registerWallet(deps.db, {
-      userId,
-      ctDescriptor: body.ctDescriptor,
-      network,
-      encryptionKey: deps.encryptionKey,
-    });
+    const result = await withRateLimit(
+      deps.db,
+      { kind: 'wallet_register', ...rateSubjects(request) },
+      () =>
+        registerWallet(deps.db, {
+          userId,
+          ctDescriptor: body.ctDescriptor!,
+          network,
+          encryptionKey: deps.encryptionKey,
+        }),
+    );
 
     return reply.status(result.created ? 201 : 200).send({
       walletId: result.walletId,
@@ -256,14 +305,19 @@ export async function buildServer(deps: ServerDeps): Promise<FastifyInstance> {
     }
     const amount = parseUserAmount(String(body.amount ?? ''), 'BRL');
 
-    const intent = await createDepositIntent(
+    const intent = await withRateLimit(
       deps.db,
-      { provider: deps.depixProvider },
-      {
-        userId,
-        amountBrlCents: amount.amount,
-        destinationAddress: body.destinationAddress,
-      },
+      { kind: 'deposit_create', ...rateSubjects(request) },
+      () =>
+        createDepositIntent(
+          deps.db,
+          { provider: deps.depixProvider },
+          {
+            userId,
+            amountBrlCents: amount.amount,
+            destinationAddress: body.destinationAddress!,
+          },
+        ),
     );
 
     return reply.status(201).send({
@@ -280,7 +334,8 @@ export async function buildServer(deps: ServerDeps): Promise<FastifyInstance> {
 
   // --- Enviar DePix ---------------------------------------------------------
   app.post('/depix/sends', authed, async (request, reply) => {
-    const { userId } = sessionOf(request);
+    const session = sessionOf(request);
+    const { userId } = session;
     const body = request.body as { amount?: string; destinationAddress?: string };
 
     if (!body.destinationAddress) {
@@ -289,11 +344,26 @@ export async function buildServer(deps: ServerDeps): Promise<FastifyInstance> {
     const amountBrl = parseUserAmount(String(body.amount ?? ''), 'BRL');
     const amountDepix = rescale(amountBrl, 'DEPIX');
 
-    const review = await prepareDepixSend(deps.db, {
+    // Política de segurança ANTES de reservar saldo: um envio que vai ser
+    // recusado não deve deixar o valor preso em pending_out.
+    const decision = await evaluateSendPolicy(deps.db, {
       userId,
-      destinationAddress: body.destinationAddress,
-      amount: amountDepix,
+      destination: body.destinationAddress,
+      totalAmount: amountDepix,
+      deviceTrusted: await isDeviceTrusted(deps.db, userId, session.deviceId),
     });
+    enforcePolicy(decision, session, { reauthAvailable: REAUTH_AVAILABLE });
+
+    const review = await withRateLimit(
+      deps.db,
+      { kind: 'send_prepare', ...rateSubjects(request) },
+      () =>
+        prepareDepixSend(deps.db, {
+          userId,
+          destinationAddress: body.destinationAddress!,
+          amount: amountDepix,
+        }),
+    );
 
     const toBrl = (v: bigint) => formatBRL(rescale(money('DEPIX', v), 'BRL', 'floor'));
 
@@ -355,7 +425,11 @@ export async function buildServer(deps: ServerDeps): Promise<FastifyInstance> {
     if (!body.pixKey) throw new DomainError('missing_pix_key', 'Informe a chave Pix');
 
     const pix = new PendingPixProvider();
-    const validation = await pix.validatePixKey(body.pixKey);
+    const validation = await withRateLimit(
+      deps.db,
+      { kind: 'pix_key_preview', ...rateSubjects(request) },
+      () => pix.validatePixKey(body.pixKey!),
+    );
 
     // Sem DICT, não temos o nome do recebedor — e não vamos inventá-lo.
     return {
@@ -463,6 +537,7 @@ const STATUS_BY_CODE: Readonly<Record<string, number>> = {
   invalid_idempotency_key: 400,
   rate_limited: 429,
   reauth_required: 403,
+  limit_exceeded: 422,
   transaction_not_found: 404,
   unknown_ledger_account: 404,
   invalid_transition: 409,
@@ -480,8 +555,8 @@ function extractToken(request: FastifyRequest): string | null {
   return match?.[1] ?? null;
 }
 
-function sessionOf(request: FastifyRequest): { userId: string; id: string } {
-  const session = (request as FastifyRequest & { session?: { userId: string; id: string } }).session;
+function sessionOf(request: FastifyRequest): SessionRecord {
+  const session = (request as FastifyRequest & { session?: SessionRecord }).session;
   if (!session) throw new DomainError('unauthenticated', 'Sessão ausente');
   return session;
 }

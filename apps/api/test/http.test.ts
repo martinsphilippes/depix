@@ -316,3 +316,89 @@ describe('extrato pela API', () => {
     varrer(body, 'body');
   });
 });
+
+describe('os controles estão no caminho da requisição', () => {
+  // O ponto desta suíte: antes desta entrega os módulos existiam e nenhuma
+  // rota os chamava. Aqui verificamos pela API, não pelo módulo.
+
+  it('o throttling registra a tentativa a cada requisição', async () => {
+    const antes = await db.collection('authAttempts').where('kind', '==', 'pix_key_preview').get();
+
+    await app.inject({
+      method: 'POST',
+      url: '/pix/withdrawals/preview',
+      headers: auth(),
+      payload: { pixKey: 'maria@email.com' },
+    });
+
+    const depois = await db.collection('authAttempts').where('kind', '==', 'pix_key_preview').get();
+    assert.ok(depois.size > antes.size, 'a rota passou pelo throttling');
+  });
+
+  it('sessão recém-autenticada passa pela política', async () => {
+    // A sessão dos testes é criada com confirmação fresca, então a política
+    // não bloqueia — o envio segue e para no saldo, que é o esperado.
+    const r = await app.inject({
+      method: 'POST',
+      url: '/depix/sends',
+      headers: auth(),
+      payload: { amount: '900,00', destinationAddress: ADDR },
+    });
+
+    assert.notEqual(r.statusCode, 403, 'confirmação recente dispensa nova confirmação');
+    // O envio segue e para no saldo. (O harness de teste usa limites folgados;
+    // a aplicação dos limites tem suíte própria em controls.test.ts.)
+    assert.equal(r.json().error.code, 'insufficient_funds');
+  });
+
+  it('sessão sem confirmação recente é bloqueada com 403 — falha fechado', async () => {
+    // Sem a cerimônia WebAuthn, a operação não tem como ser confirmada e
+    // portanto não passa. Liberar seria um controle que existe no papel.
+    const { session: stale, token: staleToken } = await createSession(db, {
+      userId,
+      freshAuth: false,
+    });
+    assert.equal(stale.reauthAt, null);
+
+    const r = await app.inject({
+      method: 'POST',
+      url: '/depix/sends',
+      headers: { authorization: `Bearer ${staleToken}` },
+      payload: { amount: '900,00', destinationAddress: ADDR },
+    });
+
+    assert.equal(r.statusCode, 403);
+    const body = r.json();
+    assert.equal(body.error.code, 'reauth_required');
+    assert.match(body.error.message, /ainda não está disponível/);
+  });
+
+  it('a rota de limites mostra o que resta antes de o usuário esbarrar', async () => {
+    const r = await app.inject({ method: 'GET', url: '/wallet/limits', headers: auth() });
+    assert.equal(r.statusCode, 200);
+
+    const body = r.json();
+    assert.match(body.perTransaction, /^R\$ /);
+    assert.match(body.dailyRemaining, /^R\$ /);
+    assert.match(body.reauthThreshold, /^R\$ /);
+    assert.equal(body.reauthAvailable, false, 'a UI precisa saber que ainda não dá para confirmar');
+  });
+
+  // Deixado por último de propósito: esgotar o limite por IP afetaria as
+  // requisições dos testes seguintes, já que app.inject usa sempre o mesmo IP.
+  it('devolve 429 quando o throttling estoura', async () => {
+    let ultimoStatus = 0;
+    for (let i = 0; i < 14; i++) {
+      const r = await app.inject({
+        method: 'POST',
+        url: '/pix/deposits',
+        headers: auth(),
+        payload: { amount: '1,00', destinationAddress: ADDR },
+      });
+      ultimoStatus = r.statusCode;
+      if (r.statusCode === 429) break;
+    }
+
+    assert.equal(ultimoStatus, 429, 'o throttling precisa entrar em ação');
+  });
+});

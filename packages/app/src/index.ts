@@ -9,3 +9,5 @@ export * from './services/webhooks.ts';
 export * from './worker/index.ts';
 export * from './crypto/at-rest.ts';
 export * from './services/wallets.ts';
+export * from './services/limits.ts';
+export * from './services/security-policy.ts';

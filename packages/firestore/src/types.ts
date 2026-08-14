@@ -112,6 +112,16 @@ export interface SessionDoc {
   createdAt: Date;
 }
 
+/** Dispositivo do usuário (subcoleção `users/{id}/devices`). */
+export interface DeviceLike {
+  fingerprint: string;
+  label: string | null;
+  /** `null` = dispositivo ainda não confirmado pelo usuário. */
+  trustedAt: Date | null;
+  firstSeenAt: Date;
+  lastSeenAt: Date;
+}
+
 export interface AuthAttemptDoc {
   subject: string;
   kind: string;

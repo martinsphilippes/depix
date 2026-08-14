@@ -24,6 +24,7 @@ import { COLLECTIONS, type Db, type LiquidTransactionDoc, liquidTxId } from '@de
 import { refundReservation, reserveForSend, settleSend, walletBalance } from '@depix/ledger';
 
 import { resolvePlatformFeeRule } from './fees.ts';
+import { assertWithinLimits } from './limits.ts';
 import { createTransaction, transitionTransaction } from './transactions.ts';
 
 export interface SendReview {
@@ -64,6 +65,19 @@ export async function prepareDepixSend(
   const platformRule = await resolvePlatformFeeRule(db, 'depix_send');
   const providerFee = params.providerFee ?? money('DEPIX', 0n);
   const breakdown = breakdownSenderPays(params.amount, platformRule, providerFee);
+
+  // Limite antes de saldo: dizer "ultrapassa o seu limite diário" é mais útil
+  // do que "saldo insuficiente" quando os dois são verdade, e evita criar
+  // transação que seria recusada de qualquer forma.
+  //
+  // A verificação vive aqui, no serviço, e não na rota: um limite checado só
+  // no handler HTTP deixa de valer para worker ou reprocessamento.
+  await assertWithinLimits(db, {
+    userId: params.userId,
+    kind: 'depix_send',
+    totalAmount: breakdown.totalDebit.amount,
+    assetCode: 'DEPIX',
+  });
 
   const balance = await walletBalance(db, params.userId, 'DEPIX');
   if (balance.available.amount < breakdown.totalDebit.amount) {

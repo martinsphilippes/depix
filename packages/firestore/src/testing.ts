@@ -106,14 +106,22 @@ export async function seedUser(
 
   await createUserLedgerAccounts(db, userId);
 
+  // Limites folgados de propósito.
+  //
+  // Testes de fluxo verificam o fluxo, não a política de limites — e amarrar
+  // os dois deixaria os testes de envio frágeis e fora de assunto. A aplicação
+  // dos limites tem suíte própria (packages/app/test/controls.test.ts), que
+  // define valores restritivos e verifica cada recusa.
+  //
+  // Um usuário real nasce com os limites conservadores de `DEFAULT_LIMITS`.
   const limits: LimitsDoc = {
     userId,
-    pixOutDailyCents: 500_000n,
-    pixOutMonthlyCents: 2_000_000n,
-    depixOutDaily: 500_000n,
-    depixOutMonthly: 2_000_000n,
-    perTxCents: 100_000n,
-    firstWithdrawCents: 10_000n,
+    pixOutDailyCents: 100_000_000n,
+    pixOutMonthlyCents: 100_000_000n,
+    depixOutDaily: 100_000_000n,
+    depixOutMonthly: 100_000_000n,
+    perTxCents: 100_000_000n,
+    firstWithdrawCents: 100_000_000n,
     newDeviceHoldHours: 24,
     newRecipientHold: true,
     updatedBy: null,
