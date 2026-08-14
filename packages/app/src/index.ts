@@ -6,3 +6,4 @@ export * from './services/deposit.ts';
 export * from './services/send.ts';
 export * from './services/history.ts';
 export * from './services/webhooks.ts';
+export * from './worker/index.ts';

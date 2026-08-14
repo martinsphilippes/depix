@@ -6,7 +6,8 @@
   "main": "./src/server.ts",
   "scripts": {
     "dev": "node --experimental-strip-types --watch src/main.ts",
-    "start": "node --experimental-strip-types src/main.ts"
+    "start": "node --experimental-strip-types src/main.ts",
+    "worker": "node --experimental-strip-types src/worker.ts"
   },
   "dependencies": {
     "@depix/app": "*",

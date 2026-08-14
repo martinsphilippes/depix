@@ -5,8 +5,14 @@
       "collectionGroup": "ledgerEntries",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "accountCode", "order": "ASCENDING" },
-        { "fieldPath": "side", "order": "ASCENDING" }
+        {
+          "fieldPath": "accountCode",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "side",
+          "order": "ASCENDING"
+        }
       ]
     },
     {
@@ -14,8 +20,14 @@
       "collectionGroup": "ledgerEntries",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "assetCode", "order": "ASCENDING" },
-        { "fieldPath": "side", "order": "ASCENDING" }
+        {
+          "fieldPath": "assetCode",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "side",
+          "order": "ASCENDING"
+        }
       ]
     },
     {
@@ -23,8 +35,14 @@
       "collectionGroup": "transactions",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "userId", "order": "ASCENDING" },
-        { "fieldPath": "createdAt", "order": "DESCENDING" }
+        {
+          "fieldPath": "userId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "createdAt",
+          "order": "DESCENDING"
+        }
       ]
     },
     {
@@ -32,9 +50,18 @@
       "collectionGroup": "transactions",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "userId", "order": "ASCENDING" },
-        { "fieldPath": "kind", "order": "ASCENDING" },
-        { "fieldPath": "createdAt", "order": "DESCENDING" }
+        {
+          "fieldPath": "userId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "kind",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "createdAt",
+          "order": "DESCENDING"
+        }
       ]
     },
     {
@@ -42,8 +69,14 @@
       "collectionGroup": "transactions",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "status", "order": "ASCENDING" },
-        { "fieldPath": "updatedAt", "order": "ASCENDING" }
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "updatedAt",
+          "order": "ASCENDING"
+        }
       ]
     },
     {
@@ -51,10 +84,22 @@
       "collectionGroup": "authAttempts",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "subject", "order": "ASCENDING" },
-        { "fieldPath": "kind", "order": "ASCENDING" },
-        { "fieldPath": "succeeded", "order": "ASCENDING" },
-        { "fieldPath": "createdAt", "order": "DESCENDING" }
+        {
+          "fieldPath": "subject",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "kind",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "succeeded",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "createdAt",
+          "order": "DESCENDING"
+        }
       ]
     },
     {
@@ -62,8 +107,14 @@
       "collectionGroup": "feeRules",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "operation", "order": "ASCENDING" },
-        { "fieldPath": "activeFrom", "order": "DESCENDING" }
+        {
+          "fieldPath": "operation",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "activeFrom",
+          "order": "DESCENDING"
+        }
       ]
     },
     {
@@ -71,18 +122,37 @@
       "collectionGroup": "sessions",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "userId", "order": "ASCENDING" },
-        { "fieldPath": "revokedAt", "order": "ASCENDING" }
+        {
+          "fieldPath": "userId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "revokedAt",
+          "order": "ASCENDING"
+        }
       ]
     },
     {
-      "_comment": "Fila: trabalhos prontos para execução.",
+      "_comment": "Fila: candidatos prontos para execução (não concluídos, não em dead-letter).",
       "collectionGroup": "jobQueue",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "queue", "order": "ASCENDING" },
-        { "fieldPath": "completedAt", "order": "ASCENDING" },
-        { "fieldPath": "runAfter", "order": "ASCENDING" }
+        {
+          "fieldPath": "queue",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "completedAt",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "failedAt",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "runAfter",
+          "order": "ASCENDING"
+        }
       ]
     },
     {
@@ -90,9 +160,44 @@
       "collectionGroup": "webhookEvents",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "signatureOk", "order": "ASCENDING" },
-        { "fieldPath": "processedAt", "order": "ASCENDING" },
-        { "fieldPath": "receivedAt", "order": "ASCENDING" }
+        {
+          "fieldPath": "signatureOk",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "processedAt",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "receivedAt",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "_comment": "Handler de webhook localiza a cobrança pelo identificador do operador.",
+      "collectionGroup": "pixTransactions",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "providerRef",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "_comment": "Handler de confirmação localiza o registro on-chain por txid e direção.",
+      "collectionGroup": "liquidTransactions",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "txid",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "direction",
+          "order": "ASCENDING"
+        }
       ]
     }
   ],

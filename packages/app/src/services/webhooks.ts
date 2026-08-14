@@ -18,13 +18,13 @@ import { DomainError } from '@depix/core';
 import {
   COLLECTIONS,
   type Db,
-  type JobDoc,
   type WebhookEventDoc,
-  compositeId,
   isAlreadyExists,
   webhookEventId,
 } from '@depix/firestore';
 import type { DepixProvider } from '@depix/providers';
+
+import { enqueue } from '../worker/queue.ts';
 
 export type IngestOutcome = 'accepted' | 'duplicate' | 'invalid_signature';
 
@@ -87,28 +87,12 @@ export async function ingestWebhook(
     return { outcome: 'duplicate', webhookEventId: null, httpStatus: 200 };
   }
 
-  const job: JobDoc = {
+  // Dedupe pelo ID do evento: o mesmo trabalho não entra na fila duas vezes.
+  await enqueue(db, {
     queue: 'webhook',
     payload: { webhookEventId: docId },
-    dedupeKey: compositeId('webhook', docId),
-    runAfter: new Date(),
-    attempts: 0,
-    maxAttempts: 10,
-    lockedAt: null,
-    lockedBy: null,
-    failedAt: null,
-    lastError: null,
-    completedAt: null,
-    createdAt: new Date(),
-  };
-
-  // ID determinístico = dedupe da fila. O mesmo trabalho não entra duas vezes.
-  await db
-    .doc(`${COLLECTIONS.jobQueue}/${job.dedupeKey}`)
-    .create(job as unknown as Record<string, unknown>)
-    .catch((err: unknown) => {
-      if (!isAlreadyExists(err)) throw err;
-    });
+    dedupeKey: docId,
+  });
 
   return { outcome: 'accepted', webhookEventId: docId, httpStatus: 200 };
 }
