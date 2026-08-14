@@ -12,6 +12,7 @@
     "@depix/firestore": "*",
     "@depix/ledger": "*",
     "@depix/providers": "*",
-    "@depix/wallet": "*"
+    "@depix/wallet": "*",
+    "@simplewebauthn/server": "^13.3.2"
   }
 }

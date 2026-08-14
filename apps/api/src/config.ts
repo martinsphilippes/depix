@@ -29,6 +29,12 @@ export interface AppConfig {
   };
   readonly port: number;
   readonly ipHashSalt: string;
+  readonly webauthn: {
+    readonly rpName: string;
+    /** Domínio, sem esquema nem porta. Errar aqui é abrir a porta a phishing. */
+    readonly rpID: string;
+    readonly origin: string[];
+  };
   readonly depix: {
     readonly providerCode: 'sandbox' | 'depixapp' | 'eulen';
     readonly apiKey?: string;
@@ -84,6 +90,18 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     );
   }
 
+  // WebAuthn sobre HTTP só faz sentido em localhost, e em produção seria
+  // entregar a assinatura em claro. A origem é o que amarra a passkey ao
+  // nosso domínio; aceitar http:// em produção anula a proteção antiphishing.
+  const origins = (env['WEBAUTHN_ORIGIN'] ?? '').split(',').map((o) => o.trim());
+  if (environment === 'production' && origins.some((o) => o.startsWith('http://'))) {
+    throw new DomainError(
+      'insecure_webauthn_origin',
+      `WEBAUTHN_ORIGIN com http:// em produção (${origins.join(', ')}). ` +
+        'Passkey exige HTTPS — sem isso a proteção contra phishing não vale.',
+    );
+  }
+
   // --- Gate de produção ----------------------------------------------------
   if (environment === 'production') {
     if (!realFundsFlag) {
@@ -130,6 +148,14 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     // Salt do hash de IP: sem ele, o hash é reversível por força bruta (o
     // espaço de endereços IPv4 inteiro cabe numa tabela).
     ipHashSalt: required(env, 'IP_HASH_SALT'),
+    webauthn: {
+      rpName: env['WEBAUTHN_RP_NAME'] ?? 'Carteira',
+      rpID: required(env, 'WEBAUTHN_RP_ID'),
+      origin: required(env, 'WEBAUTHN_ORIGIN')
+        .split(',')
+        .map((o) => o.trim())
+        .filter(Boolean),
+    },
     depix: {
       providerCode,
       ...(apiKey ? { apiKey } : {}),

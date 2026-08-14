@@ -47,13 +47,43 @@ Sempre no dispositivo, via `lwk_wasm`. **Não existe endpoint de assinatura remo
 
 ## 3. Autenticação
 
-| Camada | Implementação |
+| Camada | Implementação | Estado |
+|---|---|---|
+| **Primária** | **Passkeys / WebAuthn** — sem senha, resistente a phishing, sem segredo compartilhado no servidor | ✅ implementado |
+| Sessão | Token opaco de alta entropia; **apenas o hash** no banco; cookie `HttpOnly`, `Secure`, `SameSite=Strict`; expiração absoluta e por inatividade | ✅ implementado |
+| Reautenticação | Obrigatória para: envio acima do limite de política, novo destinatário, dispositivo não reconhecido, contato alterado recentemente | ✅ implementado |
+| 2FA | Desnecessário: a passkey já é posse + biometria/PIN. Não há senha a complementar | — por design |
+| Fallback por senha | **Não existe.** Ver "por que não há senha" abaixo | — por design |
+
+### 3.1 Passkey como único fator
+
+Não há senha, e isso é decisão, não lacuna. Uma senha seria o elo fraco: reusada, phishável, e obrigaria a guardar um verificador no servidor — mais um segredo a vazar. A passkey não tem nada disso. O que o banco guarda de cada credencial é **chave pública, ID e contador** — material que, vazado inteiro, não autentica ninguém.
+
+A consequência é dura e está assumida: **perder todos os autenticadores é perder o acesso à conta.** Não existe "esqueci minha senha", porque não existe senha e porque não temos e-mail nem telefone do usuário para recuperar por lá (§18 dos requisitos — sem KYC próprio, sem base de identidade). A mitigação é o próprio ecossistema de passkeys: elas sincronizam entre dispositivos do usuário (iCloud Keychain, Google Password Manager, gerenciadores de terceiros), e a UI incentiva cadastrar mais de uma. A API recusa apagar a última credencial (`last_credential`, HTTP 409) justamente para não deixar o usuário se trancar do lado de fora.
+
+O fundo é separado desse risco: a carteira é não-custodial, e o backup de 12 palavras recupera **o dinheiro** independentemente da conta. Perder a passkey custa o histórico e a conta, não os fundos.
+
+### 3.2 O que protege o quê
+
+| Propriedade | Como é obtida | Onde falha se mal configurado |
+|---|---|---|
+| Antiphishing | O navegador só oferece a credencial ao **RP ID** que a registrou, e o `origin` assinado no `clientData` é verificado no servidor | `WEBAUTHN_RP_ID`/`WEBAUTHN_ORIGIN` errados aceitam assinatura de qualquer lugar — o gate de config recusa `http://` em produção |
+| Anti-replay | Challenge aleatório persistido, de **uso único** e com expiração curta. É consumido dentro de uma transação Firestore **antes** da verificação — inclusive quando a verificação falha | Challenge reutilizável transforma uma assinatura capturada em login |
+| Anticlonagem | O contador de assinaturas do autenticador tem de avançar. Regressão → `counter_regression` (HTTP 403) e registro em `auditLogs` | — |
+| Pseudonimato | O `userName` do WebAuthn é o ID interno da conta, não e-mail. Nenhum dado pessoal chega ao autenticador nem ao banco | — |
+
+Autenticadores que não implementam contador (mantêm zero) são aceitos: pela especificação, contador estático significa "não suportado", não "clonado". A detecção só age quando o valor **retrocede**.
+
+### 3.3 Superfície
+
+| Rota | Para quê |
 |---|---|
-| **Primária** | **Passkeys / WebAuthn** — sem senha, resistente a phishing, sem segredo compartilhado no servidor |
-| Fallback | Senha com **Argon2id** (parâmetros adequados; nunca MD5/SHA1/SHA256 puro) |
-| 2FA | TOTP com segredo cifrado (AES-256-GCM); backup codes de uso único, armazenados como hash |
-| Sessão | Token opaco de alta entropia; **apenas o hash** no banco; cookie `HttpOnly`, `Secure`, `SameSite=Strict`; expiração absoluta e por inatividade |
-| Reautenticação | Obrigatória para: envio acima do limite de política, novo destinatário, alteração de segurança, exportação de backup |
+| `POST /auth/register/start` · `/finish` | Cria conta e primeira passkey |
+| `POST /auth/login/start` · `/finish` | Login (discoverable credential — sem identificador digitado) |
+| `POST /auth/reauth/start` · `/finish` | Confirma identidade numa sessão já aberta; carimba `reauthAt` **naquela sessão**, nunca em outra |
+| `GET` · `DELETE /auth/credentials` | Lista e revoga passkeys; a última não pode ser removida |
+
+Tentativas de login malsucedidas alimentam o rate limiting no modo `failures`.
 
 ### Rate limiting e força bruta
 

@@ -6,17 +6,20 @@
  * usuário é exigir uma prova recente de identidade nas operações que
  * importam.
  *
- * ⚠️ ESTADO ATUAL — leia antes de mexer.
+ * Decisão e satisfação são separadas de propósito. A decisão vive aqui; a
+ * satisfação é a cerimônia WebAuthn (`auth/webauthn.ts`), que carimba
+ * `reauthAt` na sessão. `enforcePolicy` recebe `reauthAvailable` para saber
+ * qual das duas coisas está acontecendo quando bloqueia:
  *
- * A **decisão** está implementada e ligada. A **satisfação** não: exigir
- * reautenticação pressupõe um segundo fator, e a cerimônia WebAuthn ainda não
- * existe. O efeito prático é que operações que disparam a política ficam
- * bloqueadas até o passkey entrar.
+ *   • com a cerimônia disponível, o bloqueio é um pedido — a UI manda o
+ *     usuário confirmar por passkey e repete a operação;
+ *   • sem ela, o bloqueio é definitivo, e a mensagem diz isso.
  *
- * Isso é deliberado e é o comportamento correto de um sistema financeiro:
- * falhar fechado. A alternativa — deixar passar porque ainda não temos como
- * verificar — seria um controle que existe no papel e não no caminho da
- * operação, que é exatamente o problema que este trabalho veio corrigir.
+ * O segundo caso não deve mais acontecer na API (que passa `true`), mas o
+ * parâmetro fica: falhar fechado quando não há como verificar é o
+ * comportamento correto de um sistema financeiro, e a alternativa — deixar
+ * passar porque ainda não temos como verificar — seria um controle que existe
+ * no papel e não no caminho da operação.
  */
 
 import { type Money, DomainError, formatBRL, money, rescale } from '@depix/core';

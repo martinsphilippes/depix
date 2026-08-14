@@ -38,8 +38,18 @@ import {
   createDepositIntent,
   enforcePolicy,
   evaluateSendPolicy,
+  assertWithinRateLimit,
+  createSession,
+  finishPasskeyAuthentication,
+  finishPasskeyRegistration,
   hashIp,
   isDeviceTrusted,
+  listCredentials,
+  markReauth,
+  recordAttempt,
+  removeCredential,
+  startPasskeyAuthentication,
+  startPasskeyRegistration,
   limitsSummary,
   reauthThresholdLabel,
   withRateLimit,
@@ -189,13 +199,158 @@ export async function buildServer(deps: ServerDeps): Promise<FastifyInstance> {
     };
   }
 
-  /**
-   * A reautenticação por passkey ainda não existe (a cerimônia WebAuthn é a
-   * próxima entrega). Enquanto for `false`, operações que disparam a política
-   * ficam **bloqueadas** em vez de liberadas — falhar fechado é o
-   * comportamento correto num sistema financeiro.
-   */
-  const REAUTH_AVAILABLE = false;
+  // A reautenticação por passkey existe: operações que disparam a política
+  // podem ser confirmadas em vez de bloqueadas.
+  const REAUTH_AVAILABLE = true;
+
+  const webauthn = deps.config.webauthn;
+  const waConfig = {
+    rpName: webauthn.rpName,
+    rpID: webauthn.rpID,
+    origin: webauthn.origin,
+  };
+
+  /** Cookie de sessão: HttpOnly impede o JavaScript da página de lê-lo. */
+  function setSessionCookie(reply: FastifyReply, token: string): void {
+    const secure = deps.config.environment === 'production' ? '; Secure' : '';
+    reply.header(
+      'set-cookie',
+      `session=${token}; Path=/; HttpOnly; SameSite=Strict${secure}; Max-Age=${30 * 24 * 60 * 60}`,
+    );
+  }
+
+  // --- Passkeys -------------------------------------------------------------
+
+  app.post('/auth/register/start', async (request) => {
+    const body = request.body as { handle?: string };
+    const existing = (request as FastifyRequest & { session?: SessionRecord }).session;
+
+    const start = await startPasskeyRegistration(deps.db, {
+      config: waConfig,
+      ...(existing ? { userId: existing.userId } : {}),
+      ...(body?.handle ? { handle: body.handle } : {}),
+    });
+
+    // O userId volta só para diagnóstico: quem manda no `finish` é o
+    // challenge guardado no servidor, não um campo enviado pelo cliente.
+    return { options: start.options };
+  });
+
+  app.post('/auth/register/finish', async (request, reply) => {
+    const body = request.body as { response?: unknown; label?: string };
+    if (!body?.response) throw new DomainError('missing_response', 'Resposta da passkey ausente');
+
+    const result = await finishPasskeyRegistration(deps.db, {
+      config: waConfig,
+      response: body.response as never,
+      ...(body.label ? { label: body.label } : {}),
+    });
+
+    const ip = request.ip;
+    const { token } = await createSession(deps.db, {
+      userId: result.userId,
+      ...(ip ? { ipHash: hashIp(ip, deps.config.ipHashSalt) } : {}),
+      ...(request.headers['user-agent'] ? { userAgent: request.headers['user-agent'] } : {}),
+      freshAuth: true,
+    });
+
+    setSessionCookie(reply, token);
+    return reply.status(201).send({
+      token,
+      userId: result.userId,
+      backedUp: result.backedUp,
+      // Sem backup no dispositivo, perder o aparelho perde a passkey — e com
+      // ela o acesso. O usuário precisa saber disso agora, não depois.
+      warning: result.backedUp
+        ? null
+        : 'Esta passkey não tem backup. Se você perder este dispositivo, perderá o acesso. Cadastre uma segunda passkey.',
+    });
+  });
+
+  app.post('/auth/login/start', async () => {
+    // Sem allowCredentials: login sem digitar identificador nenhum.
+    const start = await startPasskeyAuthentication(deps.db, { config: waConfig });
+    return { options: start.options };
+  });
+
+  app.post('/auth/login/finish', async (request, reply) => {
+    const body = request.body as { response?: unknown };
+    if (!body?.response) throw new DomainError('missing_response', 'Resposta da passkey ausente');
+
+    const ip = request.ip;
+    const ipSubject = ip ? `ip:${hashIp(ip, deps.config.ipHashSalt)}` : undefined;
+    await assertWithinRateLimit(deps.db, {
+      kind: 'login',
+      ...(ipSubject ? { ipSubject } : {}),
+    });
+
+    let result;
+    try {
+      result = await finishPasskeyAuthentication(deps.db, {
+        config: waConfig,
+        response: body.response as never,
+      });
+    } catch (err) {
+      // Falha conta para o rate limiting; sucesso não penaliza quem errou antes.
+      if (ipSubject) {
+        await recordAttempt(deps.db, { subject: ipSubject, kind: 'login', succeeded: false });
+      }
+      throw err;
+    }
+
+    const { token } = await createSession(deps.db, {
+      userId: result.userId,
+      ...(ip ? { ipHash: hashIp(ip, deps.config.ipHashSalt) } : {}),
+      ...(request.headers['user-agent'] ? { userAgent: request.headers['user-agent'] } : {}),
+      freshAuth: true,
+    });
+
+    setSessionCookie(reply, token);
+    return { token, userId: result.userId };
+  });
+
+  // Reautenticação: confirma identidade sobre uma sessão que já existe.
+  app.post('/auth/reauth/start', authed, async (request) => {
+    const session = sessionOf(request);
+    const start = await startPasskeyAuthentication(deps.db, {
+      config: waConfig,
+      purpose: 'reauth',
+      userId: session.userId,
+      sessionId: session.id,
+    });
+    return { options: start.options };
+  });
+
+  app.post('/auth/reauth/finish', authed, async (request) => {
+    const session = sessionOf(request);
+    const body = request.body as { response?: unknown };
+    if (!body?.response) throw new DomainError('missing_response', 'Resposta da passkey ausente');
+
+    const result = await finishPasskeyAuthentication(deps.db, {
+      config: waConfig,
+      purpose: 'reauth',
+      response: body.response as never,
+    });
+
+    if (result.userId !== session.userId || result.sessionId !== session.id) {
+      throw new DomainError('reauth_session_mismatch', 'A confirmação não corresponde a esta sessão');
+    }
+
+    await markReauth(deps.db, session.id);
+    return { confirmed: true };
+  });
+
+  app.get('/auth/credentials', authed, async (request) => {
+    const { userId } = sessionOf(request);
+    return { credentials: await listCredentials(deps.db, userId) };
+  });
+
+  app.delete('/auth/credentials/:id', authed, async (request) => {
+    const { userId } = sessionOf(request);
+    const { id } = request.params as { id: string };
+    await removeCredential(deps.db, { userId, credentialId: id });
+    return { removed: true };
+  });
 
   // --- Saúde ----------------------------------------------------------------
   app.get('/health', async () => {
@@ -541,6 +696,13 @@ const STATUS_BY_CODE: Readonly<Record<string, number>> = {
   transaction_not_found: 404,
   unknown_ledger_account: 404,
   invalid_transition: 409,
+  challenge_invalid: 400,
+  credential_not_found: 404,
+  counter_regression: 403,
+  authentication_failed: 401,
+  registration_failed: 400,
+  credential_already_registered: 409,
+  last_credential: 409,
   asset_id_mismatch: 422,
   duplicate_e2e_id: 409,
   amount_out_of_range: 400,

@@ -122,6 +122,42 @@ export interface DeviceLike {
   lastSeenAt: Date;
 }
 
+/**
+ * Credencial WebAuthn. ID do documento = ID da credencial, que é único
+ * globalmente — a mesma passkey não é registrada duas vezes.
+ *
+ * Guardamos a chave **pública**. Não há segredo compartilhado: um vazamento
+ * deste documento não permite autenticar como o usuário.
+ */
+export interface WebAuthnCredentialDoc {
+  userId: string;
+  credentialId: string;
+  publicKey: Buffer;
+  /** Contador anti-clone: precisa avançar a cada uso. */
+  counter: number;
+  transports: string[];
+  deviceType: string;
+  backedUp: boolean;
+  label: string | null;
+  createdAt: Date;
+  lastUsedAt: Date | null;
+}
+
+/**
+ * Challenge de uso único. ID do documento = o próprio challenge.
+ *
+ * É lido e apagado na mesma transação, inclusive quando a verificação falha
+ * depois: cada tentativa gasta o challenge, o que fecha a janela de replay.
+ */
+export interface WebAuthnChallengeDoc {
+  challenge: string;
+  purpose: 'registration' | 'authentication' | 'reauth';
+  userId: string | null;
+  sessionId: string | null;
+  expiresAt: Date;
+  createdAt: Date;
+}
+
 export interface AuthAttemptDoc {
   subject: string;
   kind: string;

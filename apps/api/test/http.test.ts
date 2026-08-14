@@ -17,6 +17,11 @@ const config: AppConfig = {
   firebase: { projectId: 'demo-depix-test-http', emulatorHost: '127.0.0.1:8080' },
   port: 0,
   ipHashSalt: 'salt',
+  webauthn: {
+    rpName: 'Carteira Teste',
+    rpID: 'carteira.exemplo.br',
+    origin: ['https://carteira.exemplo.br'],
+  },
   depix: { providerCode: 'sandbox', webhookSecret: 'whsec_test' },
   realFundsEnabled: false,
 };
@@ -351,9 +356,10 @@ describe('os controles estão no caminho da requisição', () => {
     assert.equal(r.json().error.code, 'insufficient_funds');
   });
 
-  it('sessão sem confirmação recente é bloqueada com 403 — falha fechado', async () => {
-    // Sem a cerimônia WebAuthn, a operação não tem como ser confirmada e
-    // portanto não passa. Liberar seria um controle que existe no papel.
+  it('sessão sem confirmação recente é bloqueada com 403 e sabe o motivo', async () => {
+    // A sessão é válida — o que falta é a prova recente de identidade. O
+    // bloqueio agora é um pedido: com a cerimônia de passkey no ar, a UI
+    // manda confirmar e repete a operação.
     const { session: stale, token: staleToken } = await createSession(db, {
       userId,
       freshAuth: false,
@@ -370,7 +376,10 @@ describe('os controles estão no caminho da requisição', () => {
     assert.equal(r.statusCode, 403);
     const body = r.json();
     assert.equal(body.error.code, 'reauth_required');
-    assert.match(body.error.message, /ainda não está disponível/);
+    // Com a confirmação disponível, a mensagem explica o motivo e não anuncia
+    // indisponibilidade — o usuário tem o que fazer a respeito.
+    assert.match(body.error.message, /valor está acima do limite/);
+    assert.doesNotMatch(body.error.message, /ainda não está disponível/);
   });
 
   it('a rota de limites mostra o que resta antes de o usuário esbarrar', async () => {
@@ -381,7 +390,7 @@ describe('os controles estão no caminho da requisição', () => {
     assert.match(body.perTransaction, /^R\$ /);
     assert.match(body.dailyRemaining, /^R\$ /);
     assert.match(body.reauthThreshold, /^R\$ /);
-    assert.equal(body.reauthAvailable, false, 'a UI precisa saber que ainda não dá para confirmar');
+    assert.equal(body.reauthAvailable, true, 'a UI precisa saber que dá para confirmar por passkey');
   });
 
   // Deixado por último de propósito: esgotar o limite por IP afetaria as

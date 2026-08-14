@@ -199,6 +199,28 @@
           "order": "ASCENDING"
         }
       ]
+    },
+    {
+      "_comment": "Passkeys de um usuário: listar, e montar allowCredentials.",
+      "collectionGroup": "webauthnCredentials",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "userId",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "_comment": "Limpeza de challenges expirados.",
+      "collectionGroup": "webauthnChallenges",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "expiresAt",
+          "order": "ASCENDING"
+        }
+      ]
     }
   ],
   "fieldOverrides": []

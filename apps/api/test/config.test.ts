@@ -7,11 +7,15 @@ const BASE = {
   FIREBASE_PROJECT_ID: 'demo-depix-dev',
   IP_HASH_SALT: 'salt-de-teste',
   FIRESTORE_EMULATOR_HOST: '127.0.0.1:8080',
+  WEBAUTHN_RP_ID: 'localhost',
+  WEBAUTHN_ORIGIN: 'http://localhost:5173',
 };
 
 const PROD = {
   FIREBASE_PROJECT_ID: 'depix-prod',
   IP_HASH_SALT: 'salt',
+  WEBAUTHN_RP_ID: 'carteira.example',
+  WEBAUTHN_ORIGIN: 'https://carteira.example',
   APP_ENV: 'production',
   ENABLE_REAL_FUNDS: 'yes',
   DEPIX_PROVIDER: 'depixapp',
@@ -118,6 +122,61 @@ describe('gate do operador e de fundos reais', () => {
     // endereços IPv4 inteiro cabe numa tabela.
     const { IP_HASH_SALT: _omitido, ...semSalt } = BASE;
     assert.throws(() => loadConfig({ ...semSalt, APP_ENV: 'development' } as never), /IP_HASH_SALT/);
+  });
+});
+
+describe('gate do WebAuthn', () => {
+  it('recusa origem http:// em produção', () => {
+    // A origem é o que amarra a passkey ao nosso domínio. Sobre HTTP, a
+    // proteção contra phishing não vale nada.
+    assert.throws(
+      () => loadConfig({ ...PROD, WEBAUTHN_ORIGIN: 'http://carteira.example' } as never),
+      /Passkey exige HTTPS/,
+    );
+  });
+
+  it('recusa http:// mesmo quando há outra origem https válida na lista', () => {
+    assert.throws(
+      () =>
+        loadConfig({
+          ...PROD,
+          WEBAUTHN_ORIGIN: 'https://carteira.example,http://carteira.example',
+        } as never),
+      /Passkey exige HTTPS/,
+    );
+  });
+
+  it('aceita http://localhost fora de produção', () => {
+    const c = loadConfig({ ...BASE, APP_ENV: 'development' } as never);
+    assert.deepEqual(c.webauthn.origin, ['http://localhost:5173']);
+    assert.equal(c.webauthn.rpID, 'localhost');
+  });
+
+  it('aceita múltiplas origens separadas por vírgula', () => {
+    const c = loadConfig({
+      ...PROD,
+      WEBAUTHN_ORIGIN: 'https://carteira.example, https://app.carteira.example',
+    } as never);
+    assert.deepEqual(c.webauthn.origin, [
+      'https://carteira.example',
+      'https://app.carteira.example',
+    ]);
+  });
+
+  it('exige WEBAUTHN_RP_ID — sem ele não há a quem amarrar a passkey', () => {
+    const { WEBAUTHN_RP_ID: _omitido, ...semRpId } = BASE;
+    assert.throws(
+      () => loadConfig({ ...semRpId, APP_ENV: 'development' } as never),
+      /WEBAUTHN_RP_ID/,
+    );
+  });
+
+  it('exige WEBAUTHN_ORIGIN', () => {
+    const { WEBAUTHN_ORIGIN: _omitido, ...semOrigem } = BASE;
+    assert.throws(
+      () => loadConfig({ ...semOrigem, APP_ENV: 'development' } as never),
+      /WEBAUTHN_ORIGIN/,
+    );
   });
 });
 

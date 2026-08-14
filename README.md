@@ -73,6 +73,8 @@ emulador exige.
 
 **Verificação de webhook recebe `Buffer`, não objeto.** Reserializar o JSON antes de conferir a assinatura é o erro clássico da integração; a assinatura do tipo torna esse erro impossível de cometer por descuido, e há teste de regressão provando que o corpo reserializado é rejeitado.
 
+**A passkey é o único fator, e não há senha nenhuma.** Sem senha não há o que phishar, reusar ou vazar do servidor: o banco guarda chave pública, ID e contador — material inútil para quem o roubar. O challenge é de uso único e consumido **antes** da verificação, inclusive quando ela falha, então uma assinatura capturada não vira login. Contador que retrocede é credencial clonada e a autenticação é recusada com registro em auditoria. O preço, assumido: perder todos os autenticadores é perder a conta — não há e-mail de recuperação porque não coletamos e-mail. O dinheiro é separado desse risco pelo backup de 12 palavras, e a API recusa apagar a última passkey. Os testes usam um autenticador ECDSA P-256 de software real, verificado pela mesma biblioteca de produção — inclusive o teste que simula phishing assinando de outra origem.
+
 **Os controles estão no caminho da requisição, não só no repositório.** Rate limiting (por conta e por IP, com modo de força bruta e modo de throttling), reautenticação para operação sensível, e limites por usuário verificados **dentro do serviço** — não na rota, porque limite checado só no handler HTTP deixa de valer para worker e reprocessamento. Há testes que provam a fiação pela API, não pelo módulo.
 
 **A aplicação não sobe em configuração perigosa.** `sk_live_` fora de produção, sandbox em produção, ou produção sem `ENABLE_REAL_FUNDS=yes` derrubam o boot. E — específico do Firestore — desenvolvimento apontado para o projeto real sem confirmação explícita também derruba: a diferença entre banco de brincadeira e banco de produção aqui é uma variável de ambiente, e a suíte de testes apaga todos os documentos.
@@ -100,8 +102,9 @@ Nenhuma dessas lacunas é simulada. Todas lançam `IntegrationPendingError` expl
 |---|---|
 | **Consulta DICT** (nome do dono da chave Pix) | A tela de envio não mostra o nome do recebedor. Mitigação: endereço de estorno sempre preenchido + confirmação explícita da chave |
 | **Lightning para DePix** | Cadeias e protocolos diferentes, sem ponte. Botão presente e desabilitado, com o motivo |
-| **Cerimônia WebAuthn** | A política de reautenticação decide e bloqueia, mas o usuário ainda não tem como confirmar. Operações de valor alto ou destino novo ficam **bloqueadas** — falha fechado, deliberadamente |
 | **Contrato de depósito do operador** | Mapeamento isolado em `mapDeposit*`, marcado para verificação em sandbox antes de qualquer uso real |
+| **Telas de envio no `apps/web`** | A UI para no resumo; a chamada final ainda não está ligada a `packages/wallet` |
+| **Transação com fundos reais** | Construir → assinar → transmitir tem teste com UTXO sintético, mas nunca rodou contra testnet com saldo |
 
 ---
 
