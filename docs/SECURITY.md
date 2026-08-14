@@ -156,9 +156,19 @@ Bloqueio por conta **e** por IP — bloquear só por IP não protege contra botn
 
 **Nota específica de carteira web:** um XSS numa carteira non-custodial pode roubar a seed em memória. Por isso a CSP não é "boa prática" aqui — é controle de custódia. Qualquer PR que relaxe a CSP exige aprovação explícita e justificativa registrada.
 
+**A CSP é servida por `middleware.ts`, com nonce por requisição — não como cabeçalho estático.**
+
+Isto não é preferência de arquitetura; é a única forma que funciona sem abrir mão da proteção. O Next injeta scripts inline para hidratar o React. Uma CSP estática sem `'unsafe-inline'` os bloqueia e o aplicativo chega ao usuário **sem um único botão funcionando** — build passa, testes passam, e a página está morta. Com `'unsafe-inline'`, a CSP devolveria ao atacante exatamente a capacidade que existe para tirar.
+
+O nonce resolve os dois: gerado por requisição, aplicado pelo Next aos próprios scripts, e inacessível a script injetado por XSS. O custo é render dinâmico (`export const dynamic = 'force-dynamic'` no layout raiz), que para este aplicativo é zero — todas as telas são `'use client'` e o HTML nunca teve conteúdo a cachear.
+
+> Este bug foi encontrado por `npm run smoke:web`, que abre o app num Chromium de verdade. Nenhum teste de unidade e nenhum build o pegaria: a CSP só é aplicada por um navegador.
+
 **O único afrouxamento aprovado, e sua justificativa:** `script-src` inclui `'wasm-unsafe-eval'`. Compilar WebAssembly é bloqueado por `script-src 'self'` sozinho, e sem WebAssembly não há LWK — logo, não há assinatura no dispositivo, e a única alternativa seria assinar no servidor, que é exatamente o que a arquitetura recusa. O token permite compilar wasm e **não** reabilita `eval` nem `new Function` para JavaScript; `'unsafe-eval'` continua fora.
 
 `connect-src` também lista o Esplora, porque é assim que o dispositivo lê UTXOs e transmite a transação. Sem ele, a carteira dependeria do nosso servidor para alcançar a rede — e deixaria de ser non-custodial em qualquer sentido prático.
+
+`style-src` ainda aceita `'unsafe-inline'`: o Next injeta estilos críticos inline e não os assina com o nonce. CSS injetado não executa código; o risco é exfiltração por seletor, de outra ordem de grandeza que a de script arbitrário. Fica registrado como dívida, não como decisão final.
 
 ---
 

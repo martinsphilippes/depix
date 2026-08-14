@@ -10,3 +10,6 @@ coverage/
 .DS_Store
 *.log
 .pglite/
+
+# Logs do emulador do Firestore
+firestore-debug.log

@@ -15,48 +15,24 @@ const nextConfig = {
     return config;
   },
 
-  // Cabeçalhos de segurança (SECURITY.md §4). A CSP restritiva não é
-  // "boa prática" numa carteira non-custodial: é controle de custódia.
-  // Um XSS aqui pode roubar a seed em memória, então qualquer afrouxamento
-  // precisa de justificativa registrada.
+  // Cabeçalhos de segurança (SECURITY.md §4).
+  //
+  // ⚠️ A **CSP não está aqui** — ela vive em `middleware.ts`, porque precisa
+  // de um nonce por requisição. Uma CSP estática sem `unsafe-inline` bloqueia
+  // os scripts de hidratação do Next e entrega uma página morta; com
+  // `unsafe-inline` devolveria ao atacante a capacidade que a CSP existe para
+  // tirar. O nonce é a saída que não abre mão de nenhuma das duas coisas.
+  //
+  // Os cabeçalhos abaixo são estáticos porque não dependem da requisição.
   async headers() {
-    const csp = [
-      "default-src 'self'",
-      // `wasm-unsafe-eval` é o afrouxamento que a carteira exige, e vale a
-      // justificativa: compilar WebAssembly é bloqueado por `script-src
-      // 'self'` sozinho, e sem WebAssembly não há LWK — logo, não há
-      // assinatura no dispositivo, e a única alternativa seria assinar no
-      // servidor, que é justamente o que a arquitetura recusa.
-      //
-      // O token permite compilar wasm; NÃO reabilita `eval` nem
-      // `new Function` para JavaScript. É estritamente menos permissivo que
-      // `unsafe-eval`, que continua fora.
-      "script-src 'self' 'wasm-unsafe-eval'",
-      "style-src 'self' 'unsafe-inline'",
-      "img-src 'self' data: blob:",
-      // O dispositivo fala com dois destinos: a nossa API e o Esplora, que é
-      // como ele lê UTXOs e transmite a transação. Sem o segundo, a carteira
-      // dependeria do nosso servidor para chegar à rede — e deixaria de ser
-      // non-custodial em qualquer sentido prático.
-      "connect-src 'self' " +
-        [
-          process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001',
-          'https://blockstream.info',
-        ].join(' '),
-      "font-src 'self'",
-      "object-src 'none'",
-      "base-uri 'self'",
-      "form-action 'self'",
-      "frame-ancestors 'none'",
-    ].join('; ');
-
     return [
       {
         source: '/:path*',
         headers: [
-          { key: 'Content-Security-Policy', value: csp },
           { key: 'X-Content-Type-Options', value: 'nosniff' },
           { key: 'Referrer-Policy', value: 'strict-origin-when-cross-origin' },
+          // A câmera é usada pelo leitor de QR (§28); microfone e localização
+          // não têm por que existir numa carteira.
           { key: 'Permissions-Policy', value: 'camera=(self), microphone=(), geolocation=()' },
           { key: 'Strict-Transport-Security', value: 'max-age=63072000; includeSubDomains; preload' },
           // Isolamento de origem: sem isto, uma página aberta por nós (ou que

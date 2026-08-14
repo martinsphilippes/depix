@@ -21,6 +21,9 @@ nele.
 npm install
 cp .env.example .env          # ajuste IP_HASH_SALT
 npm test                      # sobe o emulador do Firestore e roda tudo
+npm run smoke:api             # sobe a API de verdade e bate nas rotas por HTTP
+npm run smoke:web             # abre o app num Chromium e gera uma carteira
+npm run test:testnet          # envio real na Liquid testnet (usa faucet)
 
 # desenvolvimento (dois terminais)
 npm run emulator                      # Firestore → localhost:8080
@@ -75,6 +78,8 @@ Telas: entrar, carteira (criar/restaurar com backup conferido), início, receber
 **A transação é validada saída por saída antes de ser assinada.** O saque exige que a taxa do operador seja paga numa saída explícita (não-blindada); pagá-la blindada, segundo a documentação do provider, faz a operação falhar e pode perder os fundos. O guard é função pura sobre formas de saída — testado exaustivamente, sem rede e sem carteira financiada — e **aborta em vez de transmitir**. Ele também recusa saída explícita onde ela não deveria existir, porque explícito na Liquid significa valor visível na cadeia.
 
 **Verificação de webhook recebe `Buffer`, não objeto.** Reserializar o JSON antes de conferir a assinatura é o erro clássico da integração; a assinatura do tipo torna esse erro impossível de cometer por descuido, e há teste de regressão provando que o corpo reserializado é rejeitado.
+
+**Há teste que abre um navegador de verdade, e ele já pagou por si.** `npm run smoke:web` sobe o app num Chromium, gera uma carteira e cifra um cofre. Foi assim que se descobriu que a CSP — declarada como cabeçalho estático, com build e testes passando — bloqueava os scripts de hidratação do Next e entregava ao usuário uma página **sem um único botão funcionando**. Nenhum teste de unidade pegaria isso: CSP só é aplicada por navegador. A correção é nonce por requisição em `middleware.ts`, que não abre mão da proteção.
 
 **O envio já rodou contra a rede de verdade.** Uma transação real foi montada, assinada e transmitida na Liquid testnet pelo mesmo `executeSend` que a tela chama, e o destinatário recebeu o valor exato. O teste está em `packages/wallet/test/testnet.integration.test.ts`, opt-in por `LIQUID_TESTNET_E2E=yes` — depende de faucet e de rede externa, e uma suíte instável é uma suíte que as pessoas aprendem a ignorar. Sem a variável ele reporta SKIP com o motivo, nunca passa em silêncio.
 

@@ -18,7 +18,10 @@
     "test:raw": "node --test --experimental-strip-types \"packages/*/test/*.test.ts\" \"apps/*/test/*.test.ts\"",
     "emulator": "firebase emulators:start --only firestore --project demo-depix-dev",
     "bootstrap": "node --experimental-strip-types packages/firestore/src/cli.ts",
-    "worker": "npm run worker --workspace=@depix/api"
+    "worker": "npm run worker --workspace=@depix/api",
+    "smoke:api": "firebase emulators:exec --only firestore --project demo-depix-dev \"./scripts/smoke-api.sh\"",
+    "smoke:web": "node scripts/smoke-web.mjs",
+    "test:testnet": "LIQUID_TESTNET_E2E=yes node --test --experimental-strip-types packages/wallet/test/testnet.integration.test.ts"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",
