@@ -7,3 +7,5 @@ export * from './services/send.ts';
 export * from './services/history.ts';
 export * from './services/webhooks.ts';
 export * from './worker/index.ts';
+export * from './crypto/at-rest.ts';
+export * from './services/wallets.ts';

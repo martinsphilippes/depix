@@ -35,13 +35,20 @@ import {
 import {
   type HistoryItem,
   createDepositIntent,
+  enqueueConfirmation,
+  getWalletStatus,
   ingestWebhook,
+  loadEncryptionKey,
+  markBackupConfirmed,
+  markSendBroadcast,
+  registerWallet,
   listHistory,
   periodRange,
   prepareDepixSend,
   resolveSession,
   transactionTimeline,
 } from '@depix/app';
+import { getTransaction } from '@depix/app';
 
 import { type AppConfig, loadConfig, startupBanner } from './config.ts';
 
@@ -49,6 +56,8 @@ export interface ServerDeps {
   readonly config: AppConfig;
   readonly db: Db;
   readonly depixProvider: DepixProvider;
+  /** Chave AES-256-GCM para cifrar o descriptor watch-only em repouso. */
+  readonly encryptionKey: Buffer;
 }
 
 export function buildDepixProvider(config: AppConfig): DepixProvider {
@@ -199,6 +208,44 @@ export async function buildServer(deps: ServerDeps): Promise<FastifyInstance> {
     };
   });
 
+  // --- Registro da carteira -------------------------------------------------
+  // O usuário gera as chaves no dispositivo e envia apenas o descriptor
+  // watch-only. O servidor recusa qualquer coisa com cara de chave privada.
+  app.post('/wallet', authed, async (request, reply) => {
+    const { userId } = sessionOf(request);
+    const body = request.body as { ctDescriptor?: string; network?: string };
+
+    if (!body.ctDescriptor) {
+      throw new DomainError('missing_descriptor', 'Informe o descriptor da carteira');
+    }
+    const network = body.network === 'mainnet' ? 'mainnet' : 'testnet';
+
+    const result = await registerWallet(deps.db, {
+      userId,
+      ctDescriptor: body.ctDescriptor,
+      network,
+      encryptionKey: deps.encryptionKey,
+    });
+
+    return reply.status(result.created ? 201 : 200).send({
+      walletId: result.walletId,
+      registered: true,
+      network,
+    });
+  });
+
+  app.get('/wallet', authed, async (request) => {
+    const { userId } = sessionOf(request);
+    const status = await getWalletStatus(deps.db, userId);
+    return status ?? { registered: false, backupConfirmed: false };
+  });
+
+  app.post('/wallet/backup-confirmed', authed, async (request) => {
+    const { userId } = sessionOf(request);
+    await markBackupConfirmed(deps.db, userId);
+    return { backupConfirmed: true };
+  });
+
   // --- Receber Pix ----------------------------------------------------------
   app.post('/pix/deposits', authed, async (request, reply) => {
     const { userId } = sessionOf(request);
@@ -261,6 +308,44 @@ export async function buildServer(deps: ServerDeps): Promise<FastifyInstance> {
       // A transação é montada e assinada no dispositivo do usuário. O
       // servidor não tem — e não terá — como assinar por ele.
       nextStep: 'sign_on_device',
+    });
+  });
+
+  // --- Confirmação de transmissão -------------------------------------------
+  // O cliente montou, validou, assinou e transmitiu. Aqui ele só informa o
+  // txid resultante — o servidor não assinou nada e não teria como.
+  app.post('/depix/sends/:id/broadcast', authed, async (request, reply) => {
+    const { userId } = sessionOf(request);
+    const { id } = request.params as { id: string };
+    const body = request.body as { txid?: string };
+
+    if (!body.txid || !/^[0-9a-f]{64}$/i.test(body.txid)) {
+      throw new DomainError('invalid_txid', 'Informe o TXID de 64 caracteres hexadecimais');
+    }
+
+    const transaction = await getTransaction(deps.db, id);
+    if (!transaction || transaction.userId !== userId) {
+      throw new DomainError('transaction_not_found', 'Transação não encontrada');
+    }
+
+    await markSendBroadcast(deps.db, {
+      transactionId: id,
+      txid: body.txid.toLowerCase(),
+      amount: transaction.amount,
+      actor: `user:${userId}`,
+    });
+
+    // A partir daqui quem conclui é o worker, ao ver confirmações reais.
+    await enqueueConfirmation(deps.db, {
+      transactionId: id,
+      txid: body.txid.toLowerCase(),
+      kind: 'send',
+    });
+
+    return reply.status(202).send({
+      transactionId: id,
+      txid: body.txid.toLowerCase(),
+      status: 'Confirmando',
     });
   });
 
@@ -414,7 +499,7 @@ export async function start(): Promise<void> {
   const db = createDb(fs);
   const depixProvider = buildDepixProvider(config);
 
-  const app = await buildServer({ config, db, depixProvider });
+  const app = await buildServer({ config, db, depixProvider, encryptionKey: loadEncryptionKey() });
   app.log.info(startupBanner(config));
 
   await app.listen({ port: config.port, host: '0.0.0.0' });

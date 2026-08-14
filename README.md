@@ -2,11 +2,11 @@
 
 Carteira em reais para o usuário final. Por baixo: DePix na Liquid Network, autocustódia e rampa fiat via operador autorizado.
 
-> **Estado: ETAPA 2 concluída.** Núcleo financeiro, banco, ledger, adapters, API e interface funcionando em sandbox.
+> **Estado: ETAPA 2 concluída; ETAPA 3 em andamento.** Núcleo financeiro, banco, ledger, adapters, workers, carteira com assinatura no dispositivo, API e interface.
 > **Nenhum fundo real é movimentado.** A aplicação recusa subir em produção sem liberação explícita.
 
 ```
-184 testes · 184 passando · 0 pulados
+262 testes · 262 passando · 0 pulados
 ```
 
 **Banco: Cloud Firestore.** A migração do PostgreSQL mudou o modelo de
@@ -26,6 +26,7 @@ npm test                      # sobe o emulador do Firestore e roda tudo
 npm run emulator                      # Firestore → localhost:8080
 npm run bootstrap                     # ativos, contas de sistema, providers
 npm run dev --workspace=@depix/api    # API      → localhost:3001
+npm run worker                        # worker das filas
 npm run dev --workspace=@depix/web    # UI       → localhost:3000
 ```
 
@@ -43,8 +44,9 @@ emulador exige.
 | `packages/firestore` | Cliente, modelo de documentos, bootstrap e harness de teste |
 | `packages/ledger` | Partidas dobradas, saldos, proteção contra gasto duplo |
 | `packages/providers` | Adapters: DePix App, sandbox, Esplora, Pix e Lightning pendentes |
-| `packages/app` | Autenticação, fluxos de negócio, extrato, webhooks |
-| `apps/api` | HTTP (Fastify), gate de ambiente |
+| `packages/wallet` | **Chaves, assinatura e validação pré-transmissão — roda no dispositivo do usuário** |
+| `packages/app` | Autenticação, fluxos de negócio, extrato, webhooks, workers |
+| `apps/api` | HTTP (Fastify), gate de ambiente, processo do worker |
 | `apps/web` | Interface (Next.js) |
 
 ---
@@ -67,6 +69,8 @@ emulador exige.
 
 **Autocustódia.** Não existe campo de seed, xprv ou chave privada — e um teste varre os documentos gravados e falha o build se algum aparecer. O servidor guarda apenas o descriptor watch-only: vê saldo, não assina. Um comprometimento total do servidor não move os fundos dos usuários.
 
+**A transação é validada saída por saída antes de ser assinada.** O saque exige que a taxa do operador seja paga numa saída explícita (não-blindada); pagá-la blindada, segundo a documentação do provider, faz a operação falhar e pode perder os fundos. O guard é função pura sobre formas de saída — testado exaustivamente, sem rede e sem carteira financiada — e **aborta em vez de transmitir**. Ele também recusa saída explícita onde ela não deveria existir, porque explícito na Liquid significa valor visível na cadeia.
+
 **Verificação de webhook recebe `Buffer`, não objeto.** Reserializar o JSON antes de conferir a assinatura é o erro clássico da integração; a assinatura do tipo torna esse erro impossível de cometer por descuido, e há teste de regressão provando que o corpo reserializado é rejeitado.
 
 **A aplicação não sobe em configuração perigosa.** `sk_live_` fora de produção, sandbox em produção, ou produção sem `ENABLE_REAL_FUNDS=yes` derrubam o boot. E — específico do Firestore — desenvolvimento apontado para o projeto real sem confirmação explícita também derruba: a diferença entre banco de brincadeira e banco de produção aqui é uma variável de ambiente, e a suíte de testes apaga todos os documentos.
@@ -78,8 +82,8 @@ emulador exige.
 | Fluxo | Status | Onde está |
 |---|---|---|
 | **Pix → DePix** | 🟡 sandbox funcionando; produção requer aprovação | `packages/app/src/services/deposit.ts` |
-| **DePix → Pix** | 🟡 cotação e adapter prontos; falta assinatura no dispositivo | `packages/providers/src/depix/` |
-| **DePix → DePix (Liquid)** | 🟢 ledger e fluxo completos; falta assinatura no dispositivo | `packages/app/src/services/send.ts` |
+| **DePix → Pix** | 🟡 cotação, construção da transação e guard prontos; falta credencial do operador | `packages/wallet/src/transactions.ts` |
+| **DePix → DePix (Liquid)** | 🟢 fluxo completo, assinatura no dispositivo | `packages/wallet/`, `packages/app/src/services/send.ts` |
 | **DePix → DePix (Lightning)** | 🔴 indisponível | `packages/providers/src/lightning/unavailable.ts` |
 
 Justificativa de cada classificação em [ARCHITECTURE.md](docs/ARCHITECTURE.md).
@@ -93,7 +97,6 @@ Nenhuma dessas lacunas é simulada. Todas lançam `IntegrationPendingError` expl
 | Lacuna | Consequência |
 |---|---|
 | **Consulta DICT** (nome do dono da chave Pix) | A tela de envio não mostra o nome do recebedor. Mitigação: endereço de estorno sempre preenchido + confirmação explícita da chave |
-| **Assinatura no dispositivo** (LWK) | Envio para na revisão com o valor já reservado. É a próxima entrega |
 | **Lightning para DePix** | Cadeias e protocolos diferentes, sem ponte. Botão presente e desabilitado, com o motivo |
 | **Contrato de depósito do operador** | Mapeamento isolado em `mapDeposit*`, marcado para verificação em sandbox antes de qualquer uso real |
 

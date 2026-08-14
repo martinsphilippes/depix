@@ -24,6 +24,9 @@
       ],
       "@depix/firestore": [
         "./packages/firestore/src/index.ts"
+      ],
+      "@depix/wallet": [
+        "./packages/wallet/src/index.ts"
       ]
     },
     "baseUrl": "."

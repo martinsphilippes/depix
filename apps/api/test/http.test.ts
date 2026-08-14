@@ -5,6 +5,8 @@ import { createTestDb, seedUser, type TestDb } from '@depix/firestore';
 import { SandboxDepixProvider, signDepixWebhook } from '@depix/providers';
 import { createSession } from '@depix/app';
 
+import { generateEncryptionKey } from '@depix/app';
+
 import { buildServer } from '../src/server.ts';
 import type { AppConfig } from '../src/config.ts';
 
@@ -28,7 +30,12 @@ let userId: string;
 before(async () => {
   db = await createTestDb('http');
   provider = new SandboxDepixProvider({ webhookSecret: 'whsec_test' });
-  app = await buildServer({ config, db, depixProvider: provider });
+  app = await buildServer({
+    config,
+    db,
+    depixProvider: provider,
+    encryptionKey: Buffer.from(generateEncryptionKey(), 'base64'),
+  });
 
   ({ userId } = await seedUser(db));
   const created = await createSession(db, { userId });

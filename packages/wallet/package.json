@@ -1,5 +1,5 @@
 {
-  "name": "@depix/app",
+  "name": "@depix/wallet",
   "version": "0.3.0",
   "private": true,
   "type": "module",
@@ -9,9 +9,6 @@
   },
   "dependencies": {
     "@depix/core": "*",
-    "@depix/firestore": "*",
-    "@depix/ledger": "*",
-    "@depix/providers": "*",
-    "@depix/wallet": "*"
+    "lwk_wasm": "^0.18.0"
   }
 }
