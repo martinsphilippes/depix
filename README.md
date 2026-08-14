@@ -73,6 +73,10 @@ emulador exige.
 
 **Verificação de webhook recebe `Buffer`, não objeto.** Reserializar o JSON antes de conferir a assinatura é o erro clássico da integração; a assinatura do tipo torna esse erro impossível de cometer por descuido, e há teste de regressão provando que o corpo reserializado é rejeitado.
 
+**A transação sai do dispositivo direto para a rede.** O envio é: destravar o cofre → sincronizar UTXOs → montar → validar → assinar → conferir → transmitir → só então avisar o servidor. A ordem é código, não disciplina de quem escreve a tela, e há teste que injeta uma falha de rede e prova que nada foi assinado antes da sincronização. O servidor fica sabendo do envio **depois**, pelo txid; se essa chamada falhar, o dinheiro já andou e a tela diz isso em vez de fingir que o envio não aconteceu.
+
+**A frase de recuperação fica cifrada em repouso, com uma chave que não existe em lugar nenhum.** PBKDF2-SHA256 de 600 mil iterações sobre o PIN do usuário, AES-256-GCM, e a chave derivada é `extractable: false`. O que garante: quem copiar o `localStorage` não tem a frase. O que **não** garante, e está escrito no módulo: proteção contra código malicioso rodando na página enquanto o cofre está aberto — nesse instante a chave está em memória, porque assinar exige a chave. Daí a CSP e a regra de descartar o signer no `finally`. Há teste que serializa o cofre e falha se qualquer uma das 12 palavras aparecer.
+
 **A passkey é o único fator, e não há senha nenhuma.** Sem senha não há o que phishar, reusar ou vazar do servidor: o banco guarda chave pública, ID e contador — material inútil para quem o roubar. O challenge é de uso único e consumido **antes** da verificação, inclusive quando ela falha, então uma assinatura capturada não vira login. Contador que retrocede é credencial clonada e a autenticação é recusada com registro em auditoria. O preço, assumido: perder todos os autenticadores é perder a conta — não há e-mail de recuperação porque não coletamos e-mail. O dinheiro é separado desse risco pelo backup de 12 palavras, e a API recusa apagar a última passkey. Os testes usam um autenticador ECDSA P-256 de software real, verificado pela mesma biblioteca de produção — inclusive o teste que simula phishing assinando de outra origem.
 
 **Os controles estão no caminho da requisição, não só no repositório.** Rate limiting (por conta e por IP, com modo de força bruta e modo de throttling), reautenticação para operação sensível, e limites por usuário verificados **dentro do serviço** — não na rota, porque limite checado só no handler HTTP deixa de valer para worker e reprocessamento. Há testes que provam a fiação pela API, não pelo módulo.
@@ -87,7 +91,7 @@ emulador exige.
 |---|---|---|
 | **Pix → DePix** | 🟡 sandbox funcionando; produção requer aprovação | `packages/app/src/services/deposit.ts` |
 | **DePix → Pix** | 🟡 cotação, construção da transação e guard prontos; falta credencial do operador | `packages/wallet/src/transactions.ts` |
-| **DePix → DePix (Liquid)** | 🟢 fluxo completo, assinatura no dispositivo | `packages/wallet/`, `packages/app/src/services/send.ts` |
+| **DePix → DePix (Liquid)** | 🟢 fluxo completo ponta a ponta: tela → cofre → assinatura no dispositivo → transmissão | `packages/wallet/`, `apps/web/app/enviar/` |
 | **DePix → DePix (Lightning)** | 🔴 indisponível | `packages/providers/src/lightning/unavailable.ts` |
 
 Justificativa de cada classificação em [ARCHITECTURE.md](docs/ARCHITECTURE.md).
@@ -103,8 +107,7 @@ Nenhuma dessas lacunas é simulada. Todas lançam `IntegrationPendingError` expl
 | **Consulta DICT** (nome do dono da chave Pix) | A tela de envio não mostra o nome do recebedor. Mitigação: endereço de estorno sempre preenchido + confirmação explícita da chave |
 | **Lightning para DePix** | Cadeias e protocolos diferentes, sem ponte. Botão presente e desabilitado, com o motivo |
 | **Contrato de depósito do operador** | Mapeamento isolado em `mapDeposit*`, marcado para verificação em sandbox antes de qualquer uso real |
-| **Telas de envio no `apps/web`** | A UI para no resumo; a chamada final ainda não está ligada a `packages/wallet` |
-| **Transação com fundos reais** | Construir → assinar → transmitir tem teste com UTXO sintético, mas nunca rodou contra testnet com saldo |
+| **Transação com fundos reais** | O caminho completo está ligado, mas nunca rodou contra uma carteira com saldo na testnet. Até isso acontecer, "funciona" é afirmação sobre o código, não sobre a rede |
 
 ---
 

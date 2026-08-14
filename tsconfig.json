@@ -27,6 +27,12 @@
       ],
       "@depix/wallet": [
         "./packages/wallet/src/index.ts"
+      ],
+      "@depix/core/browser": [
+        "./packages/core/src/browser.ts"
+      ],
+      "@depix/wallet/vault": [
+        "./packages/wallet/src/vault.ts"
       ]
     },
     "baseUrl": "."

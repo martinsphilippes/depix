@@ -17,7 +17,7 @@
 
 import { Address, AssetId, type Pset, type Signer, type Wollet } from 'lwk_wasm';
 
-import { DEPIX_LIQUID_ASSET_ID, DomainError } from '@depix/core';
+import { DEPIX_LIQUID_ASSET_ID, DomainError } from '@depix/core/browser';
 
 import { type NetworkName, networkOf } from './keys.ts';
 import {

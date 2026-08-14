@@ -11,24 +11,54 @@
 import Link from 'next/link';
 import { useEffect, useState } from 'react';
 
-import { type HistoryItem, type WalletBalance, api } from '../lib/api';
+import { ApiRequestError, type HistoryItem, type WalletBalance, api } from '../lib/api';
 import { TransactionRow } from '../components/TransactionRow';
+import { hasWallet } from '../lib/device-wallet';
 
 export default function Dashboard() {
   const [balance, setBalance] = useState<WalletBalance | null>(null);
   const [recent, setRecent] = useState<HistoryItem[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [semSessao, setSemSessao] = useState(false);
+  const [semCarteira, setSemCarteira] = useState(false);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    setSemCarteira(!hasWallet());
+
     Promise.all([api.balance(), api.history()])
       .then(([b, h]) => {
         setBalance(b);
         setRecent(h.items.slice(0, 6));
       })
-      .catch((err: Error) => setError(err.message))
+      .catch((err: Error) => {
+        // Não ter sessão não é erro de sistema: é o estado normal de quem
+        // ainda não entrou. Mandar para a tela de entrada é mais útil do que
+        // exibir "Sessão ausente" em vermelho.
+        if (err instanceof ApiRequestError && err.status === 401) {
+          setSemSessao(true);
+        } else {
+          setError(err.message);
+        }
+      })
       .finally(() => setLoading(false));
   }, []);
+
+  if (!loading && semSessao) {
+    return (
+      <>
+        <header className="topbar">
+          <span className="brand">Carteira</span>
+        </header>
+        <div className="empty" style={{ marginTop: 40 }}>
+          Entre para ver seu saldo.
+        </div>
+        <Link href="/entrar" className="btn" style={{ display: 'block', textAlign: 'center' }}>
+          Entrar ou criar conta
+        </Link>
+      </>
+    );
+  }
 
   return (
     <>
@@ -48,6 +78,22 @@ export default function Dashboard() {
       {error && (
         <div className="notice notice-danger" style={{ marginTop: 20 }}>
           Não foi possível carregar seus dados. {error}
+        </div>
+      )}
+
+      {/* Sem carteira no dispositivo dá para ver saldo, mas não dá para
+          enviar — a assinatura acontece aqui. Melhor dizer isso antes de o
+          usuário montar um envio e esbarrar. */}
+      {!loading && semCarteira && (
+        <div className="notice notice-warning" style={{ marginTop: 20 }}>
+          <strong>Este dispositivo ainda não tem sua carteira.</strong>
+          <br />
+          Sem ela não é possível enviar, porque a assinatura acontece aqui e não no servidor.
+          <br />
+          <br />
+          <Link href="/carteira" className="btn" style={{ display: 'inline-block' }}>
+            Criar ou restaurar carteira
+          </Link>
         </div>
       )}
 

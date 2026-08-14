@@ -11,8 +11,10 @@
  */
 
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from 'fastify';
+import cors from '@fastify/cors';
 
 import {
+  DEPIX_LIQUID_ASSET_ID,
   DomainError,
   IntegrationPendingError,
   ProviderError,
@@ -120,6 +122,25 @@ export async function buildServer(deps: ServerDeps): Promise<FastifyInstance> {
       },
     },
     bodyLimit: 1_048_576,
+  });
+
+  // --- CORS -----------------------------------------------------------------
+  // A interface roda numa origem (`localhost:3000`) e a API em outra
+  // (`localhost:3001`), então sem isto o navegador bloqueia toda chamada.
+  //
+  // Duas escolhas que não são detalhe:
+  //
+  //   • lista fixa de origens, nunca `*`. Com `credentials: true` o `*` é
+  //     recusado pelo próprio navegador, e mesmo que não fosse, seria
+  //     autorizar qualquer site a agir em nome do usuário logado;
+  //   • as origens são as **mesmas** do WebAuthn. Não é economia de
+  //     configuração: são literalmente o mesmo fato — a origem da nossa
+  //     interface — e mantê-lo em dois lugares é convidar os dois a divergirem
+  //     em produção, justamente onde o erro custa caro.
+  await app.register(cors, {
+    origin: deps.config.webauthn.origin,
+    credentials: true,
+    methods: ['GET', 'POST', 'DELETE', 'OPTIONS'],
   });
 
   // --- Parser de corpo bruto para webhooks ---------------------------------
@@ -530,6 +551,15 @@ export async function buildServer(deps: ServerDeps): Promise<FastifyInstance> {
       fee: toBrl(review.breakdown.totalFee.amount),
       total: toBrl(review.breakdown.totalDebit.amount),
       remainingAfter: toBrl(review.remainingAfter.amount),
+      // Quanto vai para o destinatário na cadeia, em unidades mínimas de
+      // DePix. O dispositivo precisa deste número para montar a transação —
+      // e o confere contra o próprio cálculo antes de assinar, porque quem
+      // assina não deve aceitar o valor de quem não assina.
+      //
+      // String, não número: em JSON, inteiro grande em `number` perde
+      // precisão silenciosamente.
+      amountUnits: review.breakdown.principal.amount.toString(),
+      assetId: DEPIX_LIQUID_ASSET_ID,
       // A transação é montada e assinada no dispositivo do usuário. O
       // servidor não tem — e não terá — como assinar por ele.
       nextStep: 'sign_on_device',

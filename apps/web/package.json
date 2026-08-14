@@ -9,12 +9,18 @@
     "lint": "next lint"
   },
   "dependencies": {
+    "@simplewebauthn/browser": "^13.3.0",
     "next": "^15.1.3",
     "react": "^19.0.0",
-    "react-dom": "^19.0.0"
+    "react-dom": "^19.0.0",
+    "@depix/wallet": "*",
+    "@depix/core": "*"
   },
   "devDependencies": {
     "@types/react": "^19.0.2",
     "@types/react-dom": "^19.0.2"
-  }
+  },
+  "browserslist": [
+    "supports es6-module and supports bigint"
+  ]
 }

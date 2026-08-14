@@ -43,6 +43,37 @@ Apenas o **descriptor CT watch-only** (`wallets.ctDescriptorEnc`): xpub + master
 
 Sempre no dispositivo, via `lwk_wasm`. **Não existe endpoint de assinatura remota.** Não existe fluxo em que o servidor produza uma transação assinada.
 
+### 2.1 O cofre local
+
+A frase precisa sobreviver entre sessões — ninguém digita 12 palavras a cada envio — e a proibição acima diz que ela nunca fica em texto puro. A conciliação é cifrá-la com uma chave **que não está armazenada em lugar nenhum**: ela é derivada do PIN do usuário a cada destravamento.
+
+| Parâmetro | Valor | Por quê |
+|---|---|---|
+| KDF | PBKDF2-HMAC-SHA256, 600.000 iterações | Recomendação do OWASP; ~0,3 s por tentativa torna força bruta sobre PIN de 6 dígitos uma operação de dias |
+| Cifra | AES-256-GCM | Autenticada: adulterar o cofre no `localStorage` invalida a tag em vez de devolver outra frase |
+| Chave derivada | `extractable: false` | Nem com XSS a chave AES vira bytes em JavaScript |
+| Salt e IV | 16 e 12 bytes aleatórios por cofre | Dois usuários com o mesmo PIN não produzem cofres comparáveis |
+
+**Por que um PIN se a conta é passkey.** A passkey autentica *para o servidor*; ela não produz, sozinha, um segredo local do qual derivar uma chave de cifra. O cofre protege contra quem já tem o dispositivo destravado — extensão maliciosa, aba aberta, XSS. A extensão PRF do WebAuthn resolveria isso de forma mais elegante e é a evolução natural do módulo; não é usada hoje porque o suporte é desigual entre navegadores e um cofre que só abre em metade dos dispositivos tranca o usuário fora do próprio dinheiro. O formato guarda o campo `kdf` para permitir a migração sem quebrar cofres existentes.
+
+**O que o cofre não resolve, e está escrito no módulo:** enquanto o cofre está aberto, a frase está em memória — assinar exige a chave. A janela é reduzida (a frase existe só dentro de `executeSend`, o signer é liberado no `finally`, e ela nunca vira estado de React), não eliminada. Dizer o contrário seria falso.
+
+**Enforcement:** teste que serializa o cofre e falha se qualquer uma das 12 palavras aparecer no resultado.
+
+### 2.2 Ordem do envio
+
+A sequência abaixo é código (`packages/wallet/src/flow.ts`), não convenção de quem escreve a tela:
+
+```
+destravar → sincronizar → montar → validar → assinar → finalizar → conferir → transmitir → descartar a chave
+```
+
+Cada inversão tem consequência concreta: validar depois de assinar deixa no dispositivo uma transação inválida já assinada; transmitir antes de conferir a finalização produz rejeição críptica e o usuário não sabe se o dinheiro foi; sincronizar depois de montar faz a carteira reportar saldo insuficiente quando o dinheiro está lá.
+
+O guard de saídas é chamado de dentro de `buildTransfer`/`buildWithdrawal` — não há caminho de construção que o contorne. Testes injetam falha de rede e verificam que as etapas `signing` e `broadcasting` nunca foram alcançadas.
+
+**A transmissão é o ponto sem volta**, e é feita pelo dispositivo direto ao Esplora, sem passar pelo nosso servidor. O servidor é avisado depois, pelo txid; falhar nesse aviso não desfaz nada, e a interface diz isso ao usuário em vez de fingir que o envio não aconteceu.
+
 ---
 
 ## 3. Autenticação
@@ -116,13 +147,18 @@ Bloqueio por conta **e** por IP — bloquear só por IP não protege contra botn
 |---|---|
 | **Injeção em query** | Não há SQL. Entrada de usuário nunca vira caminho de documento sem passar por `idComponent()`, que sanitiza e evita colisão de chave |
 | **XSS** | CSP restritiva sem `unsafe-inline`/`unsafe-eval`; escaping por padrão do framework; `dangerouslySetInnerHTML` proibido por lint |
-| **CSRF** | `SameSite=Strict` + token anti-CSRF em toda mutação; validação de `Origin` |
+| **CSRF** | `SameSite=Strict` + token anti-CSRF em toda mutação; validação de `Origin`; CORS com lista fixa de origens e nunca `*` |
 | **Clickjacking** | `frame-ancestors 'none'` |
+| **Vazamento por contexto de navegação** | `Cross-Origin-Opener-Policy: same-origin` — uma aba que segura a seed em memória não deve compartilhar contexto com página aberta por nós ou que nos abra |
 | Transporte | HTTPS obrigatório, HSTS com preload |
 | Headers | `X-Content-Type-Options: nosniff`, `Referrer-Policy: strict-origin-when-cross-origin`, `Permissions-Policy` restritiva |
 | Dependências | Lockfile; auditoria automatizada no CI; `lwk_wasm` com integridade verificada |
 
 **Nota específica de carteira web:** um XSS numa carteira non-custodial pode roubar a seed em memória. Por isso a CSP não é "boa prática" aqui — é controle de custódia. Qualquer PR que relaxe a CSP exige aprovação explícita e justificativa registrada.
+
+**O único afrouxamento aprovado, e sua justificativa:** `script-src` inclui `'wasm-unsafe-eval'`. Compilar WebAssembly é bloqueado por `script-src 'self'` sozinho, e sem WebAssembly não há LWK — logo, não há assinatura no dispositivo, e a única alternativa seria assinar no servidor, que é exatamente o que a arquitetura recusa. O token permite compilar wasm e **não** reabilita `eval` nem `new Function` para JavaScript; `'unsafe-eval'` continua fora.
+
+`connect-src` também lista o Esplora, porque é assim que o dispositivo lê UTXOs e transmite a transação. Sem ele, a carteira dependeria do nosso servidor para alcançar a rede — e deixaria de ser non-custodial em qualquer sentido prático.
 
 ---
 

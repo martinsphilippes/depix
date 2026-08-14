@@ -1,7 +1,9 @@
 import { after, before, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
+import { DEPIX_LIQUID_ASSET_ID, money } from '@depix/core';
 import { createTestDb, seedUser, type TestDb } from '@depix/firestore';
+import { creditAvailable } from '@depix/ledger';
 import { SandboxDepixProvider, signDepixWebhook } from '@depix/providers';
 import { createSession } from '@depix/app';
 
@@ -96,6 +98,79 @@ describe('carteira', () => {
     assert.equal(body.total, 'R$ 0,00');
     assert.equal(body.assets[0].code, 'DEPIX');
     assert.equal(body.assets[0].network, 'Liquid Network');
+  });
+});
+
+describe('o contrato que o dispositivo usa para assinar', () => {
+  // Estas asserções não são cosméticas: o navegador monta a transação a
+  // partir desta resposta. Um campo faltando ou com outro tipo não dá erro de
+  // compilação em lugar nenhum — dá uma tela de envio que não assina.
+
+  it('devolve o valor em unidades mínimas, como string, e o asset', async () => {
+    const { userId: rico } = await seedUser(db);
+    const { token: tokenRico } = await createSession(db, { userId: rico, freshAuth: true });
+    await creditAvailable(
+      db,
+      { transactionId: `credito-contrato-${rico}`, userId: rico, actor: 'test' },
+      money('DEPIX', 1_000_000_000n),
+    );
+
+    const r = await app.inject({
+      method: 'POST',
+      url: '/depix/sends',
+      headers: { authorization: `Bearer ${tokenRico}` },
+      payload: { amount: '1,00', destinationAddress: ADDR },
+    });
+
+    assert.equal(r.statusCode, 201);
+    const body = r.json();
+
+    // R$ 1,00 = 1 DePix = 100.000.000 unidades (o DePix tem 8 casas).
+    assert.equal(body.amountUnits, '100000000');
+    assert.equal(
+      typeof body.amountUnits,
+      'string',
+      'número em JSON perderia precisão acima de 2^53 sem avisar',
+    );
+    assert.equal(body.assetId, DEPIX_LIQUID_ASSET_ID);
+    assert.equal(body.nextStep, 'sign_on_device');
+    // O valor humano continua em reais: o usuário não vê unidade de DePix.
+    assert.equal(body.amount, 'R$ 1,00');
+  });
+});
+
+describe('CORS', () => {
+  // Sem isto o navegador bloqueia toda chamada da interface, e nenhuma tela
+  // funciona — inclusive as de envio.
+
+  it('libera a origem da interface com credenciais', async () => {
+    const r = await app.inject({
+      method: 'OPTIONS',
+      url: '/wallet/balance',
+      headers: {
+        origin: 'https://carteira.exemplo.br',
+        'access-control-request-method': 'GET',
+      },
+    });
+
+    assert.equal(r.headers['access-control-allow-origin'], 'https://carteira.exemplo.br');
+    assert.equal(r.headers['access-control-allow-credentials'], 'true');
+  });
+
+  it('não libera origem desconhecida', async () => {
+    // Com `credentials: true`, autorizar qualquer origem seria autorizar
+    // qualquer site a agir em nome de quem está logado.
+    const r = await app.inject({
+      method: 'OPTIONS',
+      url: '/wallet/balance',
+      headers: {
+        origin: 'https://carteira-falsa.example',
+        'access-control-request-method': 'GET',
+      },
+    });
+
+    assert.notEqual(r.headers['access-control-allow-origin'], 'https://carteira-falsa.example');
+    assert.notEqual(r.headers['access-control-allow-origin'], '*');
   });
 });
 

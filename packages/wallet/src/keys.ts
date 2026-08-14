@@ -22,7 +22,7 @@
 
 import { Mnemonic, Network, Signer, Wollet, WolletDescriptor } from 'lwk_wasm';
 
-import { DomainError } from '@depix/core';
+import { DomainError } from '@depix/core/browser';
 
 export type NetworkName = 'mainnet' | 'testnet';
 

@@ -82,6 +82,9 @@ export interface SendReview {
   fee: string;
   total: string;
   remainingAfter: string;
+  /** Unidades mínimas de DePix que vão ao destinatário. String: bigint não passa por JSON. */
+  amountUnits: string;
+  assetId: string;
   nextStep: string;
 }
 
@@ -120,6 +123,29 @@ export interface LightningStatus {
   reason: string;
 }
 
+export interface WalletStatus {
+  registered: boolean;
+  backupConfirmed: boolean;
+  network?: string;
+  fingerprint?: string;
+}
+
+export interface LimitsSummary {
+  perTransaction: string;
+  dailyRemaining: string;
+  monthlyRemaining: string;
+  isFirstSend: boolean;
+  firstSendLimit: string | null;
+  reauthThreshold: string;
+  reauthAvailable: boolean;
+}
+
+export interface BroadcastAck {
+  transactionId: string;
+  txid: string;
+  status: string;
+}
+
 // --- Chamadas ---------------------------------------------------------------
 
 export const api = {
@@ -137,11 +163,38 @@ export const api = {
       body: JSON.stringify({ amount, destinationAddress }),
     }),
 
+  /**
+   * Informa o txid de uma transação que o dispositivo já transmitiu.
+   *
+   * Note a ordem: o dinheiro andou ANTES desta chamada. Ela não autoriza
+   * nada — só conta ao servidor o que já aconteceu na rede, para que o
+   * worker passe a acompanhar as confirmações. Se falhar, o envio continua
+   * válido; o que se perde é o acompanhamento, e a conciliação recupera.
+   */
+  confirmBroadcast: (transactionId: string, txid: string) =>
+    request<BroadcastAck>(`/depix/sends/${encodeURIComponent(transactionId)}/broadcast`, {
+      method: 'POST',
+      body: JSON.stringify({ txid }),
+    }),
+
   previewPixKey: (pixKey: string) =>
     request<PixKeyPreview>('/pix/withdrawals/preview', {
       method: 'POST',
       body: JSON.stringify({ pixKey }),
     }),
+
+  walletStatus: () => request<WalletStatus>('/wallet'),
+
+  registerWallet: (ctDescriptor: string, network: 'mainnet' | 'testnet') =>
+    request<{ walletId: string; registered: boolean; network: string }>('/wallet', {
+      method: 'POST',
+      body: JSON.stringify({ ctDescriptor, network }),
+    }),
+
+  confirmBackup: () =>
+    request<{ backupConfirmed: boolean }>('/wallet/backup-confirmed', { method: 'POST' }),
+
+  limits: () => request<LimitsSummary>('/wallet/limits'),
 
   history: (period?: string) =>
     request<{ items: HistoryItem[] }>(`/history${period ? `?period=${period}` : ''}`),

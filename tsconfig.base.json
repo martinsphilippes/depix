@@ -1,7 +1,13 @@
 {
   "compilerOptions": {
     "target": "ES2023",
-    "lib": ["ES2023"],
+    // "DOM" está aqui por causa de `packages/wallet`, que roda no navegador e
+    // usa WebCrypto (`SubtleCrypto`, `CryptoKey`) — tipos que só existem
+    // nesta lib. O custo é que o código de servidor deixa de receber erro ao
+    // tocar em `document`; o ganho é não manter um segundo tsconfig só para
+    // um pacote. Se algum dia aparecer `document` no servidor, é sinal de que
+    // vale separar.
+    "lib": ["ES2023", "DOM"],
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
     "strict": true,

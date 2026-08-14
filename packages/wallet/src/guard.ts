@@ -20,7 +20,7 @@
  * errada custa o dinheiro dele.
  */
 
-import { DomainError } from '@depix/core';
+import { DomainError } from '@depix/core/browser';
 
 /** Forma de uma saída, independente do SDK. */
 export interface OutputShape {

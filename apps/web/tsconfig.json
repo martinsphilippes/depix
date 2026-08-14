@@ -11,6 +11,9 @@
     "moduleResolution": "bundler",
     "resolveJsonModule": true,
     "isolatedModules": true,
+    // Os pacotes do workspace são TypeScript puro, sem build: os imports
+    // internos deles terminam em .ts e o Next os transpila direto.
+    "allowImportingTsExtensions": true,
     "jsx": "preserve",
     "incremental": true,
     "plugins": [{ "name": "next" }],

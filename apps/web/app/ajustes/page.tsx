@@ -11,13 +11,16 @@ import Link from 'next/link';
 import { useEffect, useState } from 'react';
 
 import { type LightningStatus, api } from '../../lib/api';
+import { NETWORK, loadVault } from '../../lib/device-wallet';
 
 export default function Ajustes() {
   const [advanced, setAdvanced] = useState(false);
   const [lightning, setLightning] = useState<LightningStatus | null>(null);
+  const [carteira, setCarteira] = useState<ReturnType<typeof loadVault>>(null);
 
   useEffect(() => {
     setAdvanced(localStorage.getItem('advancedMode') === 'true');
+    setCarteira(loadVault());
     api.lightningStatus().then(setLightning).catch(() => setLightning(null));
   }, []);
 
@@ -78,14 +81,39 @@ export default function Ajustes() {
           <span className="review-value">No seu dispositivo</span>
         </div>
         <div className="review-row">
-          <span className="review-label">Backup</span>
-          <span className="review-value">Pendente</span>
+          <span className="review-label">Carteira neste dispositivo</span>
+          <span className="review-value">{carteira ? 'Configurada' : 'Não configurada'}</span>
+        </div>
+        {advanced && carteira && (
+          <div className="review-row">
+            <span className="review-label">Identificador</span>
+            <span className="review-value" style={{ fontFamily: 'ui-monospace, monospace', fontSize: 11 }}>
+              {carteira.fingerprint}
+            </span>
+          </div>
+        )}
+        <div className="review-row">
+          <span className="review-label">Rede</span>
+          <span className="review-value">{NETWORK === 'mainnet' ? 'Liquid' : 'Liquid testnet'}</span>
         </div>
       </div>
-      <div className="notice notice-warning">
-        <strong>Faça o backup antes de receber dinheiro.</strong> Como só você tem as chaves,
-        ninguém — nem nós — consegue recuperar o acesso se você perdê-las.
-      </div>
+
+      {!carteira ? (
+        <div className="notice notice-warning">
+          <strong>Este dispositivo ainda não tem sua carteira.</strong> Sem ela não dá para enviar,
+          porque a assinatura acontece aqui — nunca no servidor.
+          <br />
+          <br />
+          <Link href="/carteira" className="btn" style={{ display: 'inline-block' }}>
+            Criar ou restaurar carteira
+          </Link>
+        </div>
+      ) : (
+        <div className="notice notice-info">
+          Sua frase de recuperação é a única forma de recuperar o dinheiro se você perder este
+          dispositivo. Como só você a tem, ninguém — nem nós — consegue recuperá-la por você.
+        </div>
+      )}
 
       <div className="section-title">Redes</div>
       <div className="card">
