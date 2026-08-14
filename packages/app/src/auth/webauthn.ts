@@ -42,6 +42,7 @@ import {
   type WebAuthnChallengeDoc,
   type WebAuthnCredentialDoc,
   asNumber,
+  createUserLedgerAccounts,
   isAlreadyExists,
   toDate,
 } from '@depix/firestore';
@@ -220,6 +221,17 @@ export async function startPasskeyRegistration(
       updatedAt: new Date(),
     };
     await ref.create(user as unknown as Record<string, unknown>);
+
+    // Contas contábeis do usuário, criadas junto com a conta.
+    //
+    // ⚠️ Isto faltava, e o buraco era sério: sem as contas, o primeiro
+    // crédito — um Pix confirmado — lançava `unknown_ledger_account` e o
+    // dinheiro do usuário não entrava. Nenhum teste pegou porque **todos**
+    // usam `seedUser`, que criava as contas por fora; a suíte inteira estava
+    // construída sobre um atalho que o caminho real não tem.
+    //
+    // Encontrado ao percorrer o cadastro de verdade num navegador.
+    await createUserLedgerAccounts(db, userId);
   } else {
     const snap = await db.doc(`${COLLECTIONS.users}/${userId}`).get();
     if (!snap.exists) throw new WebAuthnError('user_not_found', 'Conta não encontrada');

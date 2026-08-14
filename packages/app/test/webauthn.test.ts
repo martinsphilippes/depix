@@ -11,6 +11,8 @@ import { after, before, beforeEach, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { COLLECTIONS, createTestDb, type TestDb } from '@depix/firestore';
+import { creditAvailable, walletBalance } from '@depix/ledger';
+import { money } from '@depix/core';
 
 import {
   type WebAuthnConfig,
@@ -59,6 +61,41 @@ async function registrar(
 }
 
 // ---------------------------------------------------------------------------
+
+/**
+ * Regressão: conta nova precisa nascer com as contas contábeis.
+ *
+ * Este teste existe porque a ausência dele escondeu um bug sério. Todos os
+ * outros testes do repositório partem de `seedUser`, que cria as contas do
+ * ledger por fora — e o caminho real de cadastro não criava. O resultado
+ * seria um usuário que se cadastra, recebe um Pix, e vê o crédito falhar com
+ * `unknown_ledger_account`: dinheiro pago e não creditado.
+ *
+ * A suíte inteira estava construída sobre um atalho que a produção não tem.
+ * Por isso este teste **não pode** usar `seedUser`: ele verifica justamente o
+ * que o harness mascarava.
+ */
+describe('conta criada pelo cadastro real', () => {
+  it('nasce com as contas contábeis e aceita crédito', async () => {
+    const autenticador = novoAutenticador();
+
+    const inicio = await startPasskeyRegistration(db, { config: CONFIG });
+    const resultado = await finishPasskeyRegistration(db, {
+      config: CONFIG,
+      response: autenticador.register(inicio.options.challenge) as never,
+    });
+
+    // Sem passar por `seedUser`: é o caminho do usuário de verdade.
+    await creditAvailable(
+      db,
+      { transactionId: `credito-${resultado.userId}`, userId: resultado.userId, actor: 'teste' },
+      money('DEPIX', 100_000n),
+    );
+
+    const saldo = await walletBalance(db, resultado.userId, 'DEPIX');
+    assert.equal(saldo.available.amount, 100_000n);
+  });
+});
 
 describe('registro de passkey', () => {
   it('cria conta pseudônima e registra a credencial', async () => {

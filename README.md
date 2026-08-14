@@ -22,6 +22,7 @@ npm install
 cp .env.example .env          # ajuste IP_HASH_SALT
 npm test                      # sobe o emulador do Firestore e roda tudo
 npm run smoke:api             # sobe a API de verdade e bate nas rotas por HTTP
+npm run demo                  # percorre o sistema num navegador e salva as telas
 npm run smoke:web             # abre o app num Chromium e gera uma carteira
 npm run test:testnet          # envio real na Liquid testnet (usa faucet)
 
@@ -129,6 +130,7 @@ Nenhuma dessas lacunas é simulada. Todas lançam `IntegrationPendingError` expl
 
 | Documento | Conteúdo |
 |---|---|
+| [RODANDO.md](docs/RODANDO.md) | **Como subir e percorrer o sistema na sua máquina** |
 | [DATABASE.md](docs/DATABASE.md) | **Modelo Firestore e o que mudou nas garantias do ledger** |
 | [ARCHITECTURE.md](docs/ARCHITECTURE.md) | Discovery, os 4 fluxos, decisão de custódia, riscos |
 | [PROVIDERS.md](docs/PROVIDERS.md) | Operadores, bibliotecas, Lightning — com fontes |
