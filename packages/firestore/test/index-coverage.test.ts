@@ -150,6 +150,18 @@ describe('cobertura de índices do Firestore', () => {
     );
   });
 
+  it('nenhum índice declarado é de campo único', () => {
+    // O Firestore cria índices de campo único sozinho, e RECUSA declará-los:
+    // "this index is not necessary, configure using single field index
+    // controls". Três estavam no arquivo desde o início e só apareceram ao
+    // publicar num projeto real.
+    const unicos = DECLARADOS.filter((i) => i.fields.length < 2).map(
+      (i) => `${i.collectionGroup}(${i.fields.map((f) => f.fieldPath).join(', ')})`,
+    );
+
+    assert.deepEqual(unicos, [], 'índices de campo único são automáticos e o Firestore os recusa');
+  });
+
   it('um campo a mais no meio do índice não conta como cobertura', () => {
     // Foi exatamente o defeito encontrado: o índice de authAttempts trazia
     // `succeeded` entre as igualdades e `createdAt`, e por isso não servia à

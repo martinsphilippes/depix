@@ -203,16 +203,21 @@ console.log(`projeto: ${PROJETO}`);
 console.log(`conta:   ${conta}`);
 console.log('');
 
+// Regras e índices são independentes, e as permissões dos dois também: dá
+// para ter uma e não a outra. Por isso a falha de um não interrompe o outro
+// — abortar aqui só faria o usuário resolver os problemas em série.
+let regrasOk = true;
+
 console.log('→ regras de segurança');
 try {
   const id = await publicarRegras();
   console.log(`   publicado ruleset ${id}`);
 } catch (err) {
+  regrasOk = false;
   console.error(`   FALHOU: ${detalhe(err)}`);
   if (semPermissao(err)) {
     console.error('   A conta precisa do papel "Firebase Rules Admin".');
   }
-  process.exit(1);
 }
 
 console.log('');
@@ -229,8 +234,9 @@ if (falhas.length > 0) {
     console.error('');
     for (const f of falhas) console.error(`   ${f.descricao}: ${f.mensagem.slice(0, 200)}`);
   }
-  process.exit(1);
 }
+
+if (falhas.length > 0 || !regrasOk) process.exit(1);
 
 // A construção é assíncrona: o índice existe mas leva alguns minutos para
 // ficar utilizável. Consultá-lo antes disso ainda devolve FAILED_PRECONDITION.

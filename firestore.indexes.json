@@ -175,17 +175,6 @@
       ]
     },
     {
-      "_comment": "Handler de webhook localiza a cobrança pelo identificador do operador.",
-      "collectionGroup": "pixTransactions",
-      "queryScope": "COLLECTION",
-      "fields": [
-        {
-          "fieldPath": "providerRef",
-          "order": "ASCENDING"
-        }
-      ]
-    },
-    {
       "_comment": "Handler de confirmação localiza o registro on-chain por txid e direção.",
       "collectionGroup": "liquidTransactions",
       "queryScope": "COLLECTION",
@@ -196,28 +185,6 @@
         },
         {
           "fieldPath": "direction",
-          "order": "ASCENDING"
-        }
-      ]
-    },
-    {
-      "_comment": "Passkeys de um usuário: listar, e montar allowCredentials.",
-      "collectionGroup": "webauthnCredentials",
-      "queryScope": "COLLECTION",
-      "fields": [
-        {
-          "fieldPath": "userId",
-          "order": "ASCENDING"
-        }
-      ]
-    },
-    {
-      "_comment": "Limpeza de challenges expirados.",
-      "collectionGroup": "webauthnChallenges",
-      "queryScope": "COLLECTION",
-      "fields": [
-        {
-          "fieldPath": "expiresAt",
           "order": "ASCENDING"
         }
       ]
