@@ -96,8 +96,30 @@ export interface UserDoc {
   emailVerified: boolean;
   status: 'active' | 'suspended' | 'closed';
   advancedMode: boolean;
+  /**
+   * Hash Argon2id da senha, quando a conta tem uma. `null`/ausente numa conta
+   * só de passkey.
+   *
+   * ⚠️ Nunca a senha. O campo guarda o hash completo no formato PHC
+   * (`$argon2id$v=19$m=…`), que já embute salt e parâmetros — não existe
+   * campo de salt separado porque ele viaja aqui dentro.
+   */
+  passwordHash?: string | null;
+  passwordUpdatedAt?: Date | null;
   createdAt: Date;
   updatedAt: Date;
+}
+
+/**
+ * Índice de login: ID do documento = identificador normalizado.
+ *
+ * É a constraint de unicidade de e-mail/usuário. Consultar antes de criar
+ * teria janela de corrida; `create()` no ID não tem.
+ */
+export interface LoginIndexDoc {
+  userId: string;
+  identifier: string;
+  createdAt: Date;
 }
 
 /** ID do documento = hash do token. O token nunca é gravado. */

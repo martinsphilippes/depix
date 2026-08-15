@@ -120,6 +120,13 @@ export default function Ajustes() {
 
       <div className="section-title">Mais</div>
       <div className="actions" style={{ gridTemplateColumns: '1fr' }}>
+        <Link href="/seguranca" className="action">
+          <span className="action-icon" aria-hidden>
+            ⚿
+          </span>
+          Segurança da conta
+          <span className="action-hint">Senha e passkeys</span>
+        </Link>
         <Link href="/contatos" className="action">
           <span className="action-icon" aria-hidden>
             ☰

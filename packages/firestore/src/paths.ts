@@ -26,6 +26,7 @@ export const COLLECTIONS = {
   users: 'users',
   sessions: 'sessions',
   authAttempts: 'authAttempts',
+  loginIndex: 'loginIndex',
   webauthnCredentials: 'webauthnCredentials',
   webauthnChallenges: 'webauthnChallenges',
   adminUsers: 'adminUsers',

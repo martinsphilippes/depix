@@ -9,6 +9,8 @@ import { createSession, grantAdmin } from '@depix/app';
 
 import { generateEncryptionKey } from '@depix/app';
 
+import { SoftwareAuthenticator } from '../../../packages/app/test/helpers/authenticator.ts';
+
 import { buildServer } from '../src/server.ts';
 import type { AppConfig } from '../src/config.ts';
 
@@ -171,6 +173,120 @@ describe('CORS', () => {
 
     assert.notEqual(r.headers['access-control-allow-origin'], 'https://carteira-falsa.example');
     assert.notEqual(r.headers['access-control-allow-origin'], '*');
+  });
+});
+
+describe('senha e passkey na mesma conta', () => {
+  // Esta suíte existe por um bug encontrado percorrendo o sistema num
+  // navegador: `/auth/register/start` lia `request.session`, nada a
+  // preenchia, e quem já estava logado e cadastrava uma passkey recebia uma
+  // CONTA NOVA E VAZIA — com o saldo sumindo da tela.
+  //
+  // Nenhum teste pegava porque todos chamavam a função de registro direto,
+  // passando `userId` na mão. Estes vão pela rota HTTP, que é onde o buraco
+  // estava.
+
+  it('cria conta com e-mail e senha e entra com ela', async () => {
+    const criar = await app.inject({
+      method: 'POST',
+      url: '/auth/password/register',
+      payload: { identifier: 'nova@exemplo.br', password: 'uma frase bem comprida' },
+    });
+    assert.equal(criar.statusCode, 201);
+
+    const entrar = await app.inject({
+      method: 'POST',
+      url: '/auth/password/login',
+      payload: { identifier: 'nova@exemplo.br', password: 'uma frase bem comprida' },
+    });
+    assert.equal(entrar.statusCode, 200);
+    assert.equal(entrar.json().userId, criar.json().userId);
+  });
+
+  it('senha errada devolve 401 com mensagem que não denuncia a conta', async () => {
+    const r = await app.inject({
+      method: 'POST',
+      url: '/auth/password/login',
+      payload: { identifier: 'nova@exemplo.br', password: 'chute-errado-aqui' },
+    });
+    assert.equal(r.statusCode, 401);
+    assert.equal(r.json().error.code, 'invalid_credentials');
+
+    const inexistente = await app.inject({
+      method: 'POST',
+      url: '/auth/password/login',
+      payload: { identifier: 'fantasma@exemplo.br', password: 'chute-errado-aqui' },
+    });
+    assert.equal(
+      inexistente.json().error.message,
+      r.json().error.message,
+      'a mensagem revela quais contas existem',
+    );
+  });
+
+  it('cadastrar passkey logado NÃO cria outra conta', async () => {
+    // O bug. Sem o hook de autenticação opcional, este teste falha com dois
+    // userIds diferentes — e o usuário, na tela, vê o saldo zerar.
+    const criar = await app.inject({
+      method: 'POST',
+      url: '/auth/password/register',
+      payload: { identifier: 'juntas@exemplo.br', password: 'outra frase bem comprida' },
+    });
+    const donoId = criar.json().userId as string;
+    const donoToken = criar.json().token as string;
+    const comSessao = { authorization: `Bearer ${donoToken}` };
+
+    const start = await app.inject({
+      method: 'POST',
+      url: '/auth/register/start',
+      headers: comSessao,
+      payload: {},
+    });
+    assert.equal(start.statusCode, 200);
+
+    const autenticador = new SoftwareAuthenticator({
+      rpID: config.webauthn.rpID,
+      origin: config.webauthn.origin[0]!,
+    });
+
+    const finish = await app.inject({
+      method: 'POST',
+      url: '/auth/register/finish',
+      headers: comSessao,
+      payload: { response: autenticador.register(start.json().options.challenge) },
+    });
+
+    assert.equal(finish.statusCode, 201);
+    assert.equal(finish.json().userId, donoId, 'a passkey foi para outra conta');
+
+    // E a conta passa a ter os dois métodos.
+    const metodos = await app.inject({ method: 'GET', url: '/auth/methods', headers: comSessao });
+    assert.deepEqual(metodos.json(), { password: true, passkeys: 1 });
+  });
+
+  it('sem sessão, o registro de passkey cria conta nova — como deve', async () => {
+    const start = await app.inject({ method: 'POST', url: '/auth/register/start', payload: {} });
+    const autenticador = new SoftwareAuthenticator({
+      rpID: config.webauthn.rpID,
+      origin: config.webauthn.origin[0]!,
+    });
+
+    const finish = await app.inject({
+      method: 'POST',
+      url: '/auth/register/finish',
+      payload: { response: autenticador.register(start.json().options.challenge) },
+    });
+
+    assert.equal(finish.statusCode, 201);
+    assert.ok(finish.json().token, 'conta nova precisa de sessão nova');
+
+    // Conta só de passkey: sem senha.
+    const metodos = await app.inject({
+      method: 'GET',
+      url: '/auth/methods',
+      headers: { authorization: `Bearer ${finish.json().token}` },
+    });
+    assert.deepEqual(metodos.json(), { password: false, passkeys: 1 });
   });
 });
 

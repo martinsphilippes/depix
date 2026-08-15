@@ -22,7 +22,7 @@
     "smoke:api": "firebase emulators:exec --only firestore --project demo-depix-dev \"./scripts/smoke-api.sh\"",
     "smoke:web": "node scripts/smoke-web.mjs",
     "test:testnet": "LIQUID_TESTNET_E2E=yes node --test --experimental-strip-types packages/wallet/test/testnet.integration.test.ts",
-    "demo": "node scripts/demo-walkthrough.mjs",
+    "demo": "node scripts/demo-completa.mjs",
     "smoke:pwa": "node scripts/smoke-pwa.mjs",
     "icons": "node scripts/gerar-icones.mjs",
     "demo:subir": "./scripts/subir-demo.sh"
@@ -30,10 +30,12 @@
   "devDependencies": {
     "@types/node": "^22.10.2",
     "firebase-tools": "^15.27.0",
+    "playwright": "^1.62.1",
     "typescript": "^5.7.2"
   },
   "dependencies": {
     "@google-cloud/firestore": "^9.0.0",
+    "@node-rs/argon2": "^2.1.0",
     "cbor2": "^2.3.0"
   }
 }

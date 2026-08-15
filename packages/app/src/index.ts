@@ -1,5 +1,6 @@
 export * from './auth/session.ts';
 export * from './auth/webauthn.ts';
+export * from './auth/password.ts';
 export * from './auth/rate-limit.ts';
 export * from './services/transactions.ts';
 export * from './services/fees.ts';

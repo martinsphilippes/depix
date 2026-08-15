@@ -80,19 +80,52 @@ O guard de saídas é chamado de dentro de `buildTransfer`/`buildWithdrawal` —
 
 | Camada | Implementação | Estado |
 |---|---|---|
-| **Primária** | **Passkeys / WebAuthn** — sem senha, resistente a phishing, sem segredo compartilhado no servidor | ✅ implementado |
+| **Senha** | Identificador (e-mail ou apelido) + senha com **Argon2id** — 19 MiB, 2 iterações (OWASP) | ✅ implementado |
+| **Passkeys / WebAuthn** | Resistente a phishing, sem segredo compartilhado no servidor | ✅ implementado |
 | Sessão | Token opaco de alta entropia; **apenas o hash** no banco; cookie `HttpOnly`, `Secure`, `SameSite=Strict`; expiração absoluta e por inatividade | ✅ implementado |
 | Reautenticação | Obrigatória para: envio acima do limite de política, novo destinatário, dispositivo não reconhecido, contato alterado recentemente | ✅ implementado |
-| 2FA | Desnecessário: a passkey já é posse + biometria/PIN. Não há senha a complementar | — por design |
-| Fallback por senha | **Não existe.** Ver "por que não há senha" abaixo | — por design |
+| 2FA por TOTP | Não implementado. A passkey já é posse + biometria/PIN; TOTP entra se houver demanda | — pendente |
 
-### 3.1 Passkey como único fator
+### 3.1 Os dois métodos, e por que ambos
 
-Não há senha, e isso é decisão, não lacuna. Uma senha seria o elo fraco: reusada, phishável, e obrigaria a guardar um verificador no servidor — mais um segredo a vazar. A passkey não tem nada disso. O que o banco guarda de cada credencial é **chave pública, ID e contador** — material que, vazado inteiro, não autentica ninguém.
+**Senha** é o que todo mundo sabe usar, funciona em qualquer navegador e não depende de biometria. **Passkey** é mais forte de um jeito que senha nenhuma alcança: a assinatura é amarrada à origem pelo navegador, então um site clonado não a reaproveita. Nenhuma senha, por mais longa, resiste a ser digitada no site errado.
 
-A consequência é dura e está assumida: **perder todos os autenticadores é perder o acesso à conta.** Não existe "esqueci minha senha", porque não existe senha e porque não temos e-mail nem telefone do usuário para recuperar por lá (§18 dos requisitos — sem KYC próprio, sem base de identidade). A mitigação é o próprio ecossistema de passkeys: elas sincronizam entre dispositivos do usuário (iCloud Keychain, Google Password Manager, gerenciadores de terceiros), e a UI incentiva cadastrar mais de uma. A API recusa apagar a última credencial (`last_credential`, HTTP 409) justamente para não deixar o usuário se trancar do lado de fora.
+A conta aceita os dois, juntos ou separados. A tela de entrada oferece os dois lado a lado e diz qual é mais forte — sem obrigar.
 
-O fundo é separado desse risco: a carteira é não-custodial, e o backup de 12 palavras recupera **o dinheiro** independentemente da conta. Perder a passkey custa o histórico e a conta, não os fundos.
+**O que a senha precisa acertar, e como:**
+
+| Propriedade | Implementação |
+|---|---|
+| Nunca gravada | Só o hash Argon2id no formato PHC (salt e parâmetros embutidos). Teste serializa o documento e falha se a senha aparecer |
+| Custo de ataque | 19 MiB de memória — é a memória que torna caro atacar em GPU, que é como senhas vazadas são quebradas |
+| Sem enumeração de contas | Conta inexistente e senha errada devolvem a **mesma** mensagem e o **mesmo** tempo (ver §3.2) |
+| Sem regras de composição | Mínimo de 12 caracteres e nada de "uma maiúscula, um número". O NIST as abandonou porque produzem `Senha@123` |
+| Troca exige a senha atual | Uma sessão roubada não deve trocar a senha e expulsar o dono |
+| Acrescentar senha exige reauth | Sem isso, sessão roubada cadastraria senha própria numa conta que só o dono acessava |
+
+### 3.2 O vazamento por tempo, e a correção
+
+A primeira versão igualava o **custo de CPU**: quando a conta não existia, verificava contra um hash de mentira. Estava errado, e um teste de tempo pegou.
+
+O gargalo não era o KDF. Medido: Argon2 custa ~11 ms, cada leitura do Firestore ~50 ms — e a conta existente faz **duas** leituras (índice e usuário) contra **uma**. O resultado era 108 ms contra 18 ms, quase 6×: um oráculo de "esta conta existe", trivial de medir pela rede.
+
+A correção é um **piso de tempo**: toda verificação leva pelo menos 300 ms, com o resto preenchido por espera. Isso limita o vazamento independentemente do que esteja lento por baixo, em vez de equilibrar cada parte — corrida que se perde a cada refactor.
+
+Não é garantia absoluta: se o caminho real estourar o piso, a diferença reaparece na cauda. É mitigação, e está dito no módulo.
+
+### 3.3 A senha da conta não é o PIN da carteira
+
+Segredos diferentes, propósitos diferentes. A senha prova identidade **para o servidor** e trafega a cada login. O PIN decifra a frase de recuperação **no aparelho** e nunca sai dele.
+
+Usar o mesmo valor faria o segredo que trafega virar a chave do cofre, e um vazamento do lado do servidor passaria a valer o dinheiro, não só a conta. A tela de segurança avisa; nada no código liga um ao outro.
+
+### 3.4 Recuperação, e o que ela não cobre
+
+Sem e-mail verificado, a recuperação de conta é limitada — não coletamos identidade (§18) e não há a quem confirmar. Cadastrar passkey em mais de um aparelho é a mitigação, e a API recusa apagar a última credencial (`last_credential`, HTTP 409).
+
+O fundo é separado desse risco: a carteira é não-custodial, e o backup de 12 palavras recupera **o dinheiro** independentemente da conta. Perder o acesso custa o histórico, não os fundos.
+
+**Pendência registrada:** a lista de senhas óbvias é um punhado de entradas, não um dicionário. Uma verificação séria consultaria uma base de senhas vazadas (k-anonymity do Have I Been Pwned).
 
 ### 3.2 O que protege o quê
 

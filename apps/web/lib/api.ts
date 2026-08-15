@@ -203,6 +203,33 @@ export const api = {
       body: JSON.stringify({ pixKey }),
     }),
 
+  // --- Senha ----------------------------------------------------------------
+  registerWithPassword: (identifier: string, password: string) =>
+    request<{ token: string; userId: string }>('/auth/password/register', {
+      method: 'POST',
+      body: JSON.stringify({ identifier, password }),
+    }),
+
+  loginWithPassword: (identifier: string, password: string) =>
+    request<{ token: string; userId: string }>('/auth/password/login', {
+      method: 'POST',
+      body: JSON.stringify({ identifier, password }),
+    }),
+
+  changePassword: (currentPassword: string, newPassword: string) =>
+    request<{ changed: boolean }>('/auth/password/change', {
+      method: 'POST',
+      body: JSON.stringify({ currentPassword, newPassword }),
+    }),
+
+  setPassword: (identifier: string, password: string) =>
+    request<{ set: boolean }>('/auth/password/set', {
+      method: 'POST',
+      body: JSON.stringify({ identifier, password }),
+    }),
+
+  authMethods: () => request<{ password: boolean; passkeys: number }>('/auth/methods'),
+
   walletStatus: () => request<WalletStatus>('/wallet'),
 
   registerWallet: (ctDescriptor: string, network: 'mainnet' | 'testnet') =>

@@ -6,7 +6,7 @@ Carteira em reais para o usuário final. Por baixo: DePix na Liquid Network, aut
 > **Nenhum fundo real é movimentado.** A aplicação recusa subir em produção sem liberação explícita.
 
 ```
-373 testes · 373 passando · 1 suíte opt-in (rede real)
+397 testes · 397 passando · 1 suíte opt-in (rede real)
 ```
 
 **Banco: Cloud Firestore.** A migração do PostgreSQL mudou o modelo de
@@ -55,7 +55,7 @@ emulador exige.
 | `apps/api` | HTTP (Fastify), gate de ambiente, processo do worker |
 | `apps/web` | Interface (Next.js) |
 
-Telas: entrar, carteira (criar/restaurar com backup conferido), início, receber, enviar, extrato, contatos, avisos, ajustes e painel.
+Telas: entrar (senha ou passkey), carteira (criar/restaurar com backup conferido), início, receber, enviar, extrato, contatos, avisos, segurança da conta, ajustes, painel e offline.
 
 ---
 
@@ -91,7 +91,11 @@ Telas: entrar, carteira (criar/restaurar com backup conferido), início, receber
 
 **A frase de recuperação fica cifrada em repouso, com uma chave que não existe em lugar nenhum.** PBKDF2-SHA256 de 600 mil iterações sobre o PIN do usuário, AES-256-GCM, e a chave derivada é `extractable: false`. O que garante: quem copiar o `localStorage` não tem a frase. O que **não** garante, e está escrito no módulo: proteção contra código malicioso rodando na página enquanto o cofre está aberto — nesse instante a chave está em memória, porque assinar exige a chave. Daí a CSP e a regra de descartar o signer no `finally`. Há teste que serializa o cofre e falha se qualquer uma das 12 palavras aparecer.
 
-**A passkey é o único fator, e não há senha nenhuma.** Sem senha não há o que phishar, reusar ou vazar do servidor: o banco guarda chave pública, ID e contador — material inútil para quem o roubar. O challenge é de uso único e consumido **antes** da verificação, inclusive quando ela falha, então uma assinatura capturada não vira login. Contador que retrocede é credencial clonada e a autenticação é recusada com registro em auditoria. O preço, assumido: perder todos os autenticadores é perder a conta — não há e-mail de recuperação porque não coletamos e-mail. O dinheiro é separado desse risco pelo backup de 12 palavras, e a API recusa apagar a última passkey. Os testes usam um autenticador ECDSA P-256 de software real, verificado pela mesma biblioteca de produção — inclusive o teste que simula phishing assinando de outra origem.
+**Dois métodos de entrada, e a tela diz qual é mais forte.** Senha (Argon2id, 19 MiB) para quem quer o caminho conhecido; passkey para quem quer o caminho que resiste a phishing. A conta aceita os dois juntos. O detalhe que um teste pegou: igualar o custo de CPU entre "conta existe" e "conta não existe" **não bastava** — o gargalo era o banco (duas leituras contra uma), e a diferença de 108 ms contra 18 ms era um oráculo de enumeração de contas. A correção é um piso de tempo de 300 ms, que limita o vazamento venha ele do KDF, do banco ou da rede.
+
+**A senha da conta não é o PIN da carteira**, e a interface insiste nisso. A senha trafega a cada login; o PIN decifra a frase no aparelho e nunca sai dele. Iguais, o segredo que trafega viraria a chave do dinheiro.
+
+**A passkey continua sendo o fator mais forte.** Sem senha não há o que phishar, reusar ou vazar do servidor: o banco guarda chave pública, ID e contador — material inútil para quem o roubar. O challenge é de uso único e consumido **antes** da verificação, inclusive quando ela falha, então uma assinatura capturada não vira login. Contador que retrocede é credencial clonada e a autenticação é recusada com registro em auditoria. O preço, assumido: perder todos os autenticadores é perder a conta — não há e-mail de recuperação porque não coletamos e-mail. O dinheiro é separado desse risco pelo backup de 12 palavras, e a API recusa apagar a última passkey. Os testes usam um autenticador ECDSA P-256 de software real, verificado pela mesma biblioteca de produção — inclusive o teste que simula phishing assinando de outra origem.
 
 **A conciliação roda sozinha, e isso não é zelo.** No PostgreSQL um gatilho tornava impossível a projeção de saldo divergir dos lançamentos. O Firestore não tem gatilho, então a garantia deixou de ser prevenção e virou detecção — e uma detecção que não roda transforma "o saldo vem do ledger" em esperança. O worker concilia a cada 15 minutos e **registra a rodada mesmo quando não acha nada**: saber que a verificação rodou e estava tudo certo é diferente de não ter notícia dela. Nenhuma divergência é corrigida automaticamente; vira achado aberto, e fechá-lo exige escrever o que foi verificado.
 

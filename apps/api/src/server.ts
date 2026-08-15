@@ -44,8 +44,14 @@ import {
   listForReview,
   setUserStatus,
   writeAuditLog,
+  assertFreshReauth,
   changeContactDestination,
+  changePassword,
   createDepositIntent,
+  hasPassword,
+  registerWithPassword,
+  setPassword,
+  verifyPassword,
   deleteContact,
   enforcePolicy,
   findContactByDestination,
@@ -225,6 +231,30 @@ export async function buildServer(deps: ServerDeps): Promise<FastifyInstance> {
   const authed = { preHandler: authenticate };
 
   /**
+   * Autenticação opcional: resolve a sessão se houver, e segue sem ela se não.
+   *
+   * Existe para o registro de passkey, que serve a dois casos com a mesma
+   * rota — criar conta nova e acrescentar uma passkey a quem já está logado.
+   *
+   * ⚠️ A ausência disto era um bug sério: a rota lia `request.session`, nada a
+   * preenchia, e o resultado era que quem já tinha conta e cadastrava uma
+   * passkey recebia uma **conta nova e vazia** — com a sessão trocada por
+   * baixo, o saldo e o histórico sumindo da tela. Encontrado percorrendo o
+   * sistema num navegador; nenhum teste pegava porque todos chamavam a função
+   * de registro direto, passando `userId` na mão.
+   */
+  async function maybeAuthenticate(request: FastifyRequest) {
+    const token = extractToken(request);
+    if (!token) return;
+    const session = await resolveSession(deps.db, token);
+    if (session) {
+      (request as FastifyRequest & { session?: unknown }).session = session;
+    }
+  }
+
+  const maybeAuthed = { preHandler: maybeAuthenticate };
+
+  /**
    * Sujeitos do rate limiting: conta E IP.
    *
    * Só por IP não protege contra botnet; só por conta permite que um atacante
@@ -263,7 +293,7 @@ export async function buildServer(deps: ServerDeps): Promise<FastifyInstance> {
 
   // --- Passkeys -------------------------------------------------------------
 
-  app.post('/auth/register/start', async (request) => {
+  app.post('/auth/register/start', maybeAuthed, async (request) => {
     const body = request.body as { handle?: string };
     const existing = (request as FastifyRequest & { session?: SessionRecord }).session;
 
@@ -278,8 +308,9 @@ export async function buildServer(deps: ServerDeps): Promise<FastifyInstance> {
     return { options: start.options };
   });
 
-  app.post('/auth/register/finish', async (request, reply) => {
+  app.post('/auth/register/finish', maybeAuthed, async (request, reply) => {
     const body = request.body as { response?: unknown; label?: string };
+    const sessaoAtual = (request as FastifyRequest & { session?: SessionRecord }).session;
     if (!body?.response) throw new DomainError('missing_response', 'Resposta da passkey ausente');
 
     const result = await finishPasskeyRegistration(deps.db, {
@@ -287,6 +318,17 @@ export async function buildServer(deps: ServerDeps): Promise<FastifyInstance> {
       response: body.response as never,
       ...(body.label ? { label: body.label } : {}),
     });
+
+    // Quem já estava logado continua na mesma sessão: acrescentar uma passkey
+    // não é entrar de novo, e trocar a sessão aqui foi exatamente o que
+    // fazia o saldo sumir da tela.
+    if (sessaoAtual && sessaoAtual.userId === result.userId) {
+      return reply.status(201).send({
+        userId: result.userId,
+        backedUp: result.backedUp,
+        warning: null,
+      });
+    }
 
     const ip = request.ip;
     const { token } = await createSession(deps.db, {
@@ -307,6 +349,134 @@ export async function buildServer(deps: ServerDeps): Promise<FastifyInstance> {
         ? null
         : 'Esta passkey não tem backup. Se você perder este dispositivo, perderá o acesso. Cadastre uma segunda passkey.',
     });
+  });
+
+  // --- Senha ----------------------------------------------------------------
+  //
+  // Convive com a passkey, não a substitui. A passkey continua sendo o fator
+  // mais forte — resiste a phishing, e senha nenhuma resiste —, mas quem
+  // prefere senha entra com senha, e as duas podem coexistir na mesma conta.
+
+  app.post('/auth/password/register', async (request, reply) => {
+    const body = request.body as { identifier?: string; password?: string };
+    if (!body?.identifier || !body?.password) {
+      throw new DomainError('missing_credentials', 'Informe e-mail (ou usuário) e senha');
+    }
+
+    const ip = request.ip;
+    const ipSubject = ip ? `ip:${hashIp(ip, deps.config.ipHashSalt)}` : undefined;
+    await assertWithinRateLimit(deps.db, {
+      kind: 'signup',
+      ...(ipSubject ? { ipSubject } : {}),
+    });
+
+    const conta = await registerWithPassword(deps.db, {
+      identifier: body.identifier,
+      password: body.password,
+    });
+
+    const { token } = await createSession(deps.db, {
+      userId: conta.userId,
+      ...(ip ? { ipHash: hashIp(ip, deps.config.ipHashSalt) } : {}),
+      ...(request.headers['user-agent'] ? { userAgent: request.headers['user-agent'] } : {}),
+      freshAuth: true,
+    });
+
+    setSessionCookie(reply, token);
+    return reply.status(201).send({ token, userId: conta.userId });
+  });
+
+  app.post('/auth/password/login', async (request, reply) => {
+    const body = request.body as { identifier?: string; password?: string };
+    if (!body?.identifier || !body?.password) {
+      throw new DomainError('missing_credentials', 'Informe e-mail (ou usuário) e senha');
+    }
+
+    const ip = request.ip;
+    const ipSubject = ip ? `ip:${hashIp(ip, deps.config.ipHashSalt)}` : undefined;
+    // Também por identificador: só por IP não protege a conta de alguém atrás
+    // de uma botnet, e só por conta deixa um atacante trancar a conta alheia.
+    const accountSubject = `login:${body.identifier.trim().toLowerCase()}`;
+
+    await assertWithinRateLimit(deps.db, {
+      kind: 'login',
+      accountSubject,
+      ...(ipSubject ? { ipSubject } : {}),
+    });
+
+    let conta;
+    try {
+      conta = await verifyPassword(deps.db, {
+        identifier: body.identifier,
+        password: body.password,
+      });
+    } catch (err) {
+      // Falha conta para o rate limiting; acerto não penaliza quem errou antes.
+      await recordAttempt(deps.db, { subject: accountSubject, kind: 'login', succeeded: false });
+      if (ipSubject) {
+        await recordAttempt(deps.db, { subject: ipSubject, kind: 'login', succeeded: false });
+      }
+      throw err;
+    }
+
+    const { token } = await createSession(deps.db, {
+      userId: conta.userId,
+      ...(ip ? { ipHash: hashIp(ip, deps.config.ipHashSalt) } : {}),
+      ...(request.headers['user-agent'] ? { userAgent: request.headers['user-agent'] } : {}),
+      freshAuth: true,
+    });
+
+    setSessionCookie(reply, token);
+    return { token, userId: conta.userId };
+  });
+
+  app.post('/auth/password/change', authed, async (request) => {
+    const session = sessionOf(request);
+    const body = request.body as { currentPassword?: string; newPassword?: string };
+    if (!body?.currentPassword || !body?.newPassword) {
+      throw new DomainError('missing_credentials', 'Informe a senha atual e a nova');
+    }
+
+    await changePassword(deps.db, {
+      userId: session.userId,
+      currentPassword: body.currentPassword,
+      newPassword: body.newPassword,
+    });
+
+    return { changed: true };
+  });
+
+  /**
+   * Define senha numa conta que só tinha passkey.
+   *
+   * Exige confirmação recente: sem isso, uma sessão roubada acrescentaria uma
+   * senha conhecida pelo atacante a uma conta que só o dono acessava.
+   */
+  app.post('/auth/password/set', authed, async (request) => {
+    const session = sessionOf(request);
+    const body = request.body as { identifier?: string; password?: string };
+    if (!body?.identifier || !body?.password) {
+      throw new DomainError('missing_credentials', 'Informe e-mail (ou usuário) e senha');
+    }
+
+    assertFreshReauth(session, 'definir senha');
+
+    await setPassword(deps.db, {
+      userId: session.userId,
+      identifier: body.identifier,
+      password: body.password,
+    });
+
+    return { set: true };
+  });
+
+  app.get('/auth/methods', authed, async (request) => {
+    const { userId } = sessionOf(request);
+    const [senha, credenciais] = await Promise.all([
+      hasPassword(deps.db, userId),
+      listCredentials(deps.db, userId),
+    ]);
+    return { password: senha, passkeys: credenciais.length };
   });
 
   app.post('/auth/login/start', async () => {
@@ -1033,6 +1203,16 @@ const STATUS_BY_CODE: Readonly<Record<string, number>> = {
   invalid_idempotency_key: 400,
   rate_limited: 429,
   reauth_required: 403,
+  invalid_credentials: 401,
+  account_suspended: 403,
+  identifier_taken: 409,
+  weak_password: 400,
+  common_password: 400,
+  password_too_long: 400,
+  invalid_identifier: 400,
+  missing_credentials: 400,
+  no_password_set: 409,
+  same_password: 400,
   not_admin: 403,
   insufficient_role: 403,
   reason_required: 400,
