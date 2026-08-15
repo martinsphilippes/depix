@@ -137,7 +137,8 @@ Nenhuma dessas lacunas é simulada. Todas lançam `IntegrationPendingError` expl
 
 | Documento | Conteúdo |
 |---|---|
-| [RODANDO.md](docs/RODANDO.md) | **Como subir e percorrer o sistema na sua máquina** |
+| [PUBLICANDO.md](docs/PUBLICANDO.md) | **Publicar na internet: Vercel + Firebase, em três etapas** |
+| [RODANDO.md](docs/RODANDO.md) | Como subir e percorrer o sistema na sua máquina |
 | [DATABASE.md](docs/DATABASE.md) | **Modelo Firestore e o que mudou nas garantias do ledger** |
 | [ARCHITECTURE.md](docs/ARCHITECTURE.md) | Discovery, os 4 fluxos, decisão de custódia, riscos |
 | [PROVIDERS.md](docs/PROVIDERS.md) | Operadores, bibliotecas, Lightning — com fontes |
