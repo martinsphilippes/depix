@@ -25,7 +25,8 @@
     "demo": "node scripts/demo-completa.mjs",
     "smoke:pwa": "node scripts/smoke-pwa.mjs",
     "icons": "node scripts/gerar-icones.mjs",
-    "demo:subir": "./scripts/subir-demo.sh"
+    "demo:subir": "./scripts/subir-demo.sh",
+    "firebase:preparar": "./scripts/preparar-firebase.sh"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",

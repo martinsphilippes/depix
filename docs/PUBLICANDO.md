@@ -3,6 +3,13 @@
 Vercel hospeda a interface **e** a API (mesma origem). Firebase hospeda o
 banco. Três etapas, ~10 minutos.
 
+> ⚠️ **A chave da conta de serviço dá acesso total ao banco.** Ela não vai
+> para o repositório, não entra em log e não passa por chat — o lugar dela é o
+> painel de variáveis da Vercel e um gerenciador de senhas. Se ela vazar em
+> algum momento, revogue em **Configurações → Contas de serviço → Gerenciar
+> chaves** e gere outra; o sistema volta a funcionar assim que a nova estiver
+> no painel.
+
 > **Continua sem mover dinheiro real.** O provider padrão é sandbox e a
 > carteira opera em testnet. Ligar fundos reais exige `ENABLE_REAL_FUNDS=yes`
 > com `APP_ENV=production`, e a aplicação recusa subir sem os pré-requisitos
@@ -20,13 +27,22 @@ banco. Três etapas, ~10 minutos.
    privada.** Baixa um `.json`. Guarde: é a credencial que dá acesso total ao
    banco.
 
-Publique índices e regras (do seu computador, uma vez):
+> **O passo 2 não é opcional e não dá para pular.** Ter o projeto e a chave
+> não cria o banco: enquanto ele não existir, toda chamada responde
+> `Cloud Firestore API has not been used in project`. E a conta de serviço do
+> Firebase **não tem permissão** para criar o banco nem para habilitar a API —
+> é restrição do Google, não do projeto. Esse clique é seu.
+
+Depois, um comando publica índices e regras e popula os dados de referência:
 
 ```bash
-npx firebase login
-npx firebase use --add          # escolha o projeto criado
-npx firebase deploy --only firestore
+export FIREBASE_PROJECT_ID=<o-id-do-projeto>
+export GOOGLE_APPLICATION_CREDENTIALS=/caminho/para/a-chave.json
+npm run firebase:preparar
 ```
+
+Idempotente: repetir não estraga nada. Se o banco ainda não existir, ele diz
+isso com o link direto do console em vez de falhar com erro de API.
 
 > Os índices **não** são opcionais. Sem eles, as consultas de extrato,
 > contatos e conciliação falham com `FAILED_PRECONDITION` — erro que só
@@ -70,19 +86,6 @@ porque é o navegador que amarra a credencial ao domínio. É a proteção
 antiphishing funcionando contra você.
 
 ### Depois do primeiro deploy
-
-Popule os dados de referência (ativos, contas de sistema, providers), do seu
-computador:
-
-```bash
-export FIREBASE_PROJECT_ID=<o-id-do-projeto>
-export GOOGLE_APPLICATION_CREDENTIALS=/caminho/para/a-chave.json
-export ALLOW_REAL_FIRESTORE=yes     # confirma que é intencional escrever no projeto real
-npm run bootstrap
-```
-
-Sem isso, `/api/health` responde mas a primeira operação falha: não há ativo
-DePix cadastrado nem contas de sistema.
 
 Para acessar o painel administrativo:
 
