@@ -42,16 +42,24 @@ if ! node --experimental-strip-types -e "
 fi
 echo "   ok"
 
-echo "→ 2/3 publicando índices e regras"
-# Sem os índices, extrato, contatos e conciliação falham com
-# FAILED_PRECONDITION — e só na primeira vez que alguém abre aquela tela.
-npx firebase deploy --only firestore --project "$FIREBASE_PROJECT_ID" --non-interactive || {
-  echo "   falhou. A conta de serviço precisa do papel 'Cloud Datastore Owner'."
-  exit 1
-}
+echo "→ 2/3 dados de referência (ativos, contas de sistema, providers)"
+node --experimental-strip-types packages/firestore/src/cli.ts || exit 1
 
-echo "→ 3/3 dados de referência (ativos, contas de sistema, providers)"
-node --experimental-strip-types packages/firestore/src/cli.ts
+echo
+echo "→ 3/3 publicando regras e índices"
+# Pela API REST, e não por `firebase deploy`: o CLI consulta o Service Usage
+# antes de publicar, e essa permissão não vem na chave do Firebase. O erro
+# resultante fala de `serviceusage` e despista.
+#
+# Este passo vem por último de propósito. Ele é o único que pode exigir uma
+# permissão a mais, e falhar aqui não desfaz nada do que já foi feito: os
+# dados de referência já estão gravados e o script pode ser repetido.
+if ! node --experimental-strip-types scripts/publicar-firestore.mjs; then
+  echo
+  echo "Os dados de referência já foram gravados. Falta só o passo acima —"
+  echo "resolva a permissão e rode este mesmo comando de novo."
+  exit 1
+fi
 
 echo
 echo "pronto. Confira em https://SEU-DOMINIO/api/health"

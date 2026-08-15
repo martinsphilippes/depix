@@ -44,9 +44,36 @@ npm run firebase:preparar
 Idempotente: repetir não estraga nada. Se o banco ainda não existir, ele diz
 isso com o link direto do console em vez de falhar com erro de API.
 
-> Os índices **não** são opcionais. Sem eles, as consultas de extrato,
-> contatos e conciliação falham com `FAILED_PRECONDITION` — erro que só
-> aparece na primeira vez que alguém abre aquela tela.
+### Se ele parar nos índices
+
+A chave que o Firebase gera sabe **ler e escrever dados**, mas não sabe
+**criar índices** — são permissões diferentes, e a segunda não vem por padrão.
+É o único ponto desta configuração que pode exigir uma ação extra.
+
+Duas saídas, qualquer uma resolve:
+
+**Liberar a permissão** (uma vez, e o comando acima passa a fazer tudo):
+
+```bash
+gcloud projects add-iam-policy-binding <o-id-do-projeto> \
+  --member=serviceAccount:<a-conta-do-json> \
+  --role=roles/datastore.indexAdmin
+```
+
+Ou no console: **IAM → a conta `firebase-adminsdk-…` → Editar → Adicionar
+outra função → "Administrador de índices do Cloud Datastore"**.
+
+**Ou criar pelo console, sem mexer no IAM.** Logado como você, a permissão já
+existe. Este comando imprime um link por índice, cada um com a tela de criação
+já preenchida:
+
+```bash
+FIREBASE_PROJECT_ID=<o-id-do-projeto> npm run firebase:links
+```
+
+> Os índices **não** são opcionais, e não dá para deixar para depois: sem
+> eles nem o login funciona, porque a contagem de tentativas de acesso é uma
+> consulta indexada. A construção leva alguns minutos depois de criados.
 
 ---
 
