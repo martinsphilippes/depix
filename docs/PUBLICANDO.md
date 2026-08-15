@@ -58,15 +58,14 @@ isso com o link direto do console em vez de falhar com erro de API.
    por causa dos workspaces do npm.
 3. Antes de clicar em Deploy, abra **Environment Variables** e cole:
 
+**São cinco variáveis. Só isso.**
+
 | Variável | Valor |
 |---|---|
 | `FIREBASE_PROJECT_ID` | o ID do passo 1 |
 | `FIREBASE_SERVICE_ACCOUNT` | o **conteúdo inteiro** do `.json` baixado |
 | `IP_HASH_SALT` | qualquer valor aleatório longo |
 | `ENCRYPTION_KEY` | gere com o comando abaixo |
-| `WEBAUTHN_RP_ID` | o domínio, **sem** `https://` — ex.: `carteira-depix.vercel.app` |
-| `WEBAUTHN_ORIGIN` | a URL completa — ex.: `https://carteira-depix.vercel.app` |
-| `APP_ENV` | `staging` |
 | `CRON_SECRET` | qualquer valor aleatório longo |
 
 ```bash
@@ -75,15 +74,23 @@ node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
 
 4. **Deploy.**
 
-### O problema do ovo e da galinha, e como resolver
+### O domínio do WebAuthn é automático
 
-`WEBAUTHN_RP_ID` precisa do domínio, que a Vercel só dá **depois** do primeiro
-deploy. Faça assim: coloque um valor provisório, publique, copie o domínio real
-e refaça o deploy com os valores certos.
+A passkey precisa saber a qual domínio ela pertence — é isso que impede um
+site clonado de reaproveitá-la. Antes, isso era um problema de ovo e galinha:
+a Vercel só entrega o domínio **depois** do primeiro deploy, então não havia o
+que preencher antes dele.
 
-Errar isso não dá erro visível na página — a passkey simplesmente não é aceita,
-porque é o navegador que amarra a credencial ao domínio. É a proteção
-antiphishing funcionando contra você.
+A aplicação agora deduz o domínio de `VERCEL_PROJECT_PRODUCTION_URL`, que a
+Vercel define sozinha. Não há o que configurar.
+
+**Domínio próprio?** Aí sim defina `WEBAUTHN_RP_ID` (o domínio, sem `https://`)
+e `WEBAUTHN_ORIGIN` (a URL completa). O valor explícito tem precedência.
+
+> **Passkey não funciona nas URLs de preview.** Cada deploy de preview tem um
+> domínio diferente (`carteira-depix-a1b2c3.vercel.app`), e a credencial está
+> amarrada ao domínio de produção. Não é defeito: é a proteção antiphishing
+> fazendo o trabalho dela. Nas previews, use e-mail e senha.
 
 ### Depois do primeiro deploy
 
@@ -106,6 +113,7 @@ Deve responder `{"status":"ok","checks":{"firestore":"ok"}}`.
 | Resposta | O que significa |
 |---|---|
 | `server_misconfigured` com o nome de uma variável | falta essa variável no painel da Vercel |
+| `Não foi possível determinar o domínio do WebAuthn` | está rodando fora da Vercel; defina `WEBAUTHN_RP_ID` e `WEBAUTHN_ORIGIN` |
 | `"firestore":"fail"` | credencial inválida, ou o Firestore não foi criado no console |
 | `invalid_service_account` | o JSON foi colado incompleto ou com aspas sobrando |
 | `status: ok` mas a primeira operação falha | faltou o `npm run bootstrap` |

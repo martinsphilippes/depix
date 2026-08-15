@@ -133,10 +133,37 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     );
   }
 
+  // --- Domínio do WebAuthn -------------------------------------------------
+  //
+  // O RP ID é o domínio do site e a origem é a URL completa. Pedir os dois ao
+  // usuário era um problema de ovo e galinha: a Vercel só entrega o domínio
+  // **depois** do primeiro deploy, então não havia o que preencher antes.
+  //
+  // A Vercel expõe `VERCEL_PROJECT_PRODUCTION_URL` — o domínio estável de
+  // produção, sem esquema. É exatamente o RP ID, e a origem é ele com
+  // `https://` na frente. Quando existe, os dois são deduzidos.
+  //
+  // Definir as variáveis explicitamente continua valendo e tem precedência —
+  // é o caminho de quem usa domínio próprio.
+  const dominioVercel = env['VERCEL_PROJECT_PRODUCTION_URL'];
+
+  const rpIdDeduzido = env['WEBAUTHN_RP_ID'] ?? dominioVercel;
+  const origensDeduzidas =
+    env['WEBAUTHN_ORIGIN'] ?? (dominioVercel ? `https://${dominioVercel}` : undefined);
+
+  if (!rpIdDeduzido || !origensDeduzidas) {
+    throw new DomainError(
+      'missing_config',
+      'Não foi possível determinar o domínio do WebAuthn. Na Vercel isto é automático; ' +
+        'fora dela, defina WEBAUTHN_RP_ID (o domínio, sem https://) e WEBAUTHN_ORIGIN ' +
+        '(a URL completa).',
+    );
+  }
+
   // WebAuthn sobre HTTP só faz sentido em localhost, e em produção seria
   // entregar a assinatura em claro. A origem é o que amarra a passkey ao
   // nosso domínio; aceitar http:// em produção anula a proteção antiphishing.
-  const origins = (env['WEBAUTHN_ORIGIN'] ?? '').split(',').map((o) => o.trim());
+  const origins = origensDeduzidas.split(',').map((o) => o.trim());
   if (environment === 'production' && origins.some((o) => o.startsWith('http://'))) {
     throw new DomainError(
       'insecure_webauthn_origin',
@@ -194,11 +221,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     ipHashSalt: required(env, 'IP_HASH_SALT'),
     webauthn: {
       rpName: env['WEBAUTHN_RP_NAME'] ?? 'Carteira',
-      rpID: required(env, 'WEBAUTHN_RP_ID'),
-      origin: required(env, 'WEBAUTHN_ORIGIN')
-        .split(',')
-        .map((o) => o.trim())
-        .filter(Boolean),
+      rpID: rpIdDeduzido,
+      origin: origins.filter(Boolean),
     },
     depix: {
       providerCode,

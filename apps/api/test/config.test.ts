@@ -125,6 +125,53 @@ describe('gate do operador e de fundos reais', () => {
   });
 });
 
+describe('domínio do WebAuthn deduzido da Vercel', () => {
+  // Pedir domínio ao usuário antes do primeiro deploy era ovo e galinha: a
+  // Vercel só o entrega depois. Estes testes fixam a dedução.
+
+  it('deduz RP ID e origem de VERCEL_PROJECT_PRODUCTION_URL', () => {
+    const { WEBAUTHN_RP_ID: _a, WEBAUTHN_ORIGIN: _b, ...semDominio } = BASE;
+    const c = loadConfig({
+      ...semDominio,
+      APP_ENV: 'development',
+      VERCEL_PROJECT_PRODUCTION_URL: 'carteira-depix.vercel.app',
+    } as never);
+
+    assert.equal(c.webauthn.rpID, 'carteira-depix.vercel.app');
+    assert.deepEqual(c.webauthn.origin, ['https://carteira-depix.vercel.app']);
+  });
+
+  it('variável explícita tem precedência — é o caminho do domínio próprio', () => {
+    const c = loadConfig({
+      ...BASE,
+      APP_ENV: 'development',
+      WEBAUTHN_RP_ID: 'carteira.com.br',
+      WEBAUTHN_ORIGIN: 'https://carteira.com.br',
+      VERCEL_PROJECT_PRODUCTION_URL: 'carteira-depix.vercel.app',
+    } as never);
+
+    assert.equal(c.webauthn.rpID, 'carteira.com.br');
+    assert.deepEqual(c.webauthn.origin, ['https://carteira.com.br']);
+  });
+
+  it('sem domínio e sem Vercel, explica o que fazer', () => {
+    const { WEBAUTHN_RP_ID: _a, WEBAUTHN_ORIGIN: _b, ...semDominio } = BASE;
+    assert.throws(
+      () => loadConfig({ ...semDominio, APP_ENV: 'development' } as never),
+      /Na Vercel isto é automático/,
+    );
+  });
+
+  it('a origem deduzida é https — não cai no gate de produção', () => {
+    const { WEBAUTHN_RP_ID: _a, WEBAUTHN_ORIGIN: _b, ...semDominio } = PROD;
+    const c = loadConfig({
+      ...semDominio,
+      VERCEL_PROJECT_PRODUCTION_URL: 'carteira-depix.vercel.app',
+    } as never);
+    assert.deepEqual(c.webauthn.origin, ['https://carteira-depix.vercel.app']);
+  });
+});
+
 describe('gate do WebAuthn', () => {
   it('recusa origem http:// em produção', () => {
     // A origem é o que amarra a passkey ao nosso domínio. Sobre HTTP, a
