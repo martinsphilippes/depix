@@ -311,6 +311,101 @@
           "order": "DESCENDING"
         }
       ]
+    },
+    {
+      "_comment": "countRecentAttempts no modo 'all' — o throttling de toda operação financeira (depósito, envio, consulta de chave). Filtra subject e kind e NÃO filtra succeeded, então o índice de quatro campos não serve: succeeded ficaria entre as igualdades e a faixa de createdAt.",
+      "collectionGroup": "authAttempts",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "subject",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "kind",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "createdAt",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "_comment": "listHistory filtrando por status.",
+      "collectionGroup": "transactions",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "userId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "createdAt",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "_comment": "listHistory filtrando por tipo e status ao mesmo tempo.",
+      "collectionGroup": "transactions",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "userId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "kind",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "createdAt",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "_comment": "listDeadLetters filtrado por fila: igualdade em queue com desigualdade (!=) em failedAt.",
+      "collectionGroup": "jobQueue",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "queue",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "failedAt",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "_comment": "listAuditLogs filtrando por objeto e ator ao mesmo tempo, ordenado por createdAt.",
+      "collectionGroup": "auditLogs",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "objectId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "actorId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "createdAt",
+          "order": "DESCENDING"
+        }
+      ]
     }
   ],
   "fieldOverrides": []

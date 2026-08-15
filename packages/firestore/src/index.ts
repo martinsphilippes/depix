@@ -5,3 +5,4 @@ export * from './types.ts';
 export * from './bootstrap.ts';
 export * from './testing.ts';
 export * from './index-link.ts';
+export * from './index-coverage.ts';
