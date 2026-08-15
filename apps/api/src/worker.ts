@@ -32,6 +32,7 @@ export async function startWorkers(): Promise<{ stop: () => Promise<void> }> {
     projectId: config.firebase.projectId,
     ...(config.firebase.emulatorHost ? { emulatorHost: config.firebase.emulatorHost } : {}),
     ...(config.firebase.databaseId ? { databaseId: config.firebase.databaseId } : {}),
+    ...(config.firebase.credentials ? { credentials: config.firebase.credentials } : {}),
   });
   const db = createDb(fs);
 

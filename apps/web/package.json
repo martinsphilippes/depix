@@ -14,7 +14,12 @@
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "@depix/wallet": "*",
-    "@depix/core": "*"
+    "@depix/core": "*",
+    "@depix/api": "*",
+    "@depix/app": "*",
+    "@depix/firestore": "*",
+    "@depix/ledger": "*",
+    "@depix/providers": "*"
   },
   "devDependencies": {
     "@types/react": "^19.0.2",

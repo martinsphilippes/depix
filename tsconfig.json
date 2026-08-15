@@ -33,6 +33,12 @@
       ],
       "@depix/wallet/vault": [
         "./packages/wallet/src/vault.ts"
+      ],
+      "@depix/api/server": [
+        "./apps/api/src/server.ts"
+      ],
+      "@depix/api/config": [
+        "./apps/api/src/config.ts"
       ]
     },
     "baseUrl": "."

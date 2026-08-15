@@ -7,7 +7,14 @@
  * entra num sistema financeiro.
  */
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001';
+/**
+ * Base da API.
+ *
+ * Vazio = mesma origem, que é como a aplicação roda publicada: a API é
+ * servida em `/api/*` pelo próprio Next. Em desenvolvimento, apontar para
+ * `http://localhost:3001` usa o processo Fastify separado.
+ */
+const API_URL = process.env.NEXT_PUBLIC_API_URL ?? '/api';
 
 export interface ApiError {
   code: string;

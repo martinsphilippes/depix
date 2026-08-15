@@ -1,0 +1,18 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "buildCommand": "npm run build --workspace=@depix/web",
+  "installCommand": "npm install",
+  "outputDirectory": "apps/web/.next",
+  "framework": "nextjs",
+  "crons": [
+    {
+      "path": "/api/cron/worker",
+      "schedule": "*/10 * * * *"
+    }
+  ],
+  "functions": {
+    "apps/web/app/api/**": {
+      "maxDuration": 60
+    }
+  }
+}

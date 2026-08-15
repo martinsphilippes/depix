@@ -60,7 +60,7 @@ function translate(err: unknown): never {
 }
 
 async function post<T>(path: string, body?: unknown): Promise<T> {
-  const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001';
+  const API_URL = process.env.NEXT_PUBLIC_API_URL ?? '/api';
   const response = await fetch(`${API_URL}${path}`, {
     method: 'POST',
     credentials: 'include',

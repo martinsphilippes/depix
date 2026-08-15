@@ -34,7 +34,14 @@
 import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001';
+/**
+ * Origem extra para `connect-src`.
+ *
+ * Publicada, a API fica na mesma origem (`/api/*`) e `'self'` já a cobre — a
+ * variável só é preenchida em desenvolvimento, quando a API roda em outra
+ * porta.
+ */
+const API_URL = process.env.NEXT_PUBLIC_API_URL ?? '';
 
 /**
  * `next dev` usa `eval` para o refresh rápido, o que a CSP recusa.
@@ -64,7 +71,7 @@ export function middleware(request: NextRequest) {
     // Dois destinos: a nossa API e o Esplora, que é como o dispositivo lê
     // UTXOs e transmite. Sem o segundo, a carteira dependeria do nosso
     // servidor para alcançar a rede.
-    `connect-src 'self' ${API_URL} https://blockstream.info`,
+    `connect-src 'self' ${API_URL} https://blockstream.info`.replace(/\s+/g, ' '),
     // A câmera do leitor de QR entrega quadros por `blob:`/`mediastream:`.
     "media-src 'self' blob: mediastream:",
     // O service worker é script, e `script-src` sozinho não o cobre: sem

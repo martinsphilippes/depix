@@ -242,14 +242,27 @@ export async function drainQueue(
     workerId?: string;
     leaseMs?: number;
     maxJobs?: number;
+    /**
+     * Teto de tempo. Ao estourar, para de reivindicar novos jobs e devolve o
+     * que já fez.
+     *
+     * Existe por causa do serverless: a função tem tempo máximo, e ser morta
+     * no meio de um job deixa o lease pendurado até expirar. Parar pela porta
+     * é melhor — o job seguinte espera o próximo ciclo, e nada se perde.
+     */
+    budgetMs?: number;
     now?: Date;
   },
 ): Promise<DrainResult> {
   const workerId = params.workerId ?? `drain-${Math.random().toString(36).slice(2, 10)}`;
   const maxJobs = params.maxJobs ?? 100;
+  const limite =
+    params.budgetMs === undefined ? null : Date.now() + params.budgetMs;
   const result: DrainResult = { processed: 0, failed: 0, deadLettered: 0, rescheduled: 0 };
 
   for (let i = 0; i < maxJobs; i++) {
+    // Antes de reivindicar, não no meio: um job reivindicado tem de terminar.
+    if (limite !== null && Date.now() >= limite) break;
     const claimOpts: Parameters<typeof claimJob>[1] = { queue: params.queue, workerId };
     if (params.leaseMs !== undefined) claimOpts.leaseMs = params.leaseMs;
     if (params.now !== undefined) claimOpts.now = params.now;

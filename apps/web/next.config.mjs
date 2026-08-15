@@ -5,7 +5,21 @@ const nextConfig = {
   // `@depix/wallet` e `@depix/core` são workspaces em TypeScript sem build
   // próprio. O Next transpila os dois no bundle do cliente — que é onde eles
   // têm de rodar: assinatura no dispositivo, não no servidor.
-  transpilePackages: ['@depix/wallet', '@depix/core'],
+  transpilePackages: [
+    '@depix/wallet',
+    '@depix/core',
+    // A API roda como função serverless dentro do Next (app/api/[[...path]]),
+    // então os pacotes dela também passam pelo transpile.
+    '@depix/api',
+    '@depix/app',
+    '@depix/firestore',
+    '@depix/ledger',
+    '@depix/providers',
+  ],
+
+  // Módulos nativos e pesados ficam fora do bundle e são carregados em tempo
+  // de execução. `@node-rs/argon2` é binário; empacotá-lo quebra.
+  serverExternalPackages: ['@node-rs/argon2', '@google-cloud/firestore', 'fastify'],
 
   webpack: (config) => {
     // O LWK é um módulo WebAssembly. Sem isto, o import de `lwk_wasm` falha

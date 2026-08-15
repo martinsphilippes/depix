@@ -26,6 +26,14 @@ export interface AppConfig {
     /** Host do emulador. Ausente = projeto real. */
     readonly emulatorHost?: string;
     readonly databaseId?: string;
+    /**
+     * Credenciais da conta de serviço, quando não há arquivo.
+     *
+     * Em serverless não existe disco onde colocar o JSON que
+     * `GOOGLE_APPLICATION_CREDENTIALS` apontaria. A alternativa é a variável
+     * `FIREBASE_SERVICE_ACCOUNT` com o JSON inteiro.
+     */
+    readonly credentials?: { client_email: string; private_key: string };
   };
   readonly port: number;
   readonly ipHashSalt: string;
@@ -59,6 +67,36 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
 
   const projectId = required(env, 'FIREBASE_PROJECT_ID');
   const emulatorHost = env['FIRESTORE_EMULATOR_HOST'];
+
+  // Conta de serviço em JSON, para ambientes sem disco.
+  //
+  // A chave privada costuma chegar com `\n` literais quando passa por uma
+  // caixa de texto de painel — trocá-los por quebras de linha reais evita o
+  // erro mais comum ao publicar, que aparece como "invalid PEM" e não diz
+  // nada sobre a causa.
+  let credentials: AppConfig['firebase']['credentials'];
+  const contaServico = env['FIREBASE_SERVICE_ACCOUNT'];
+  if (contaServico) {
+    let bruto: { client_email?: string; private_key?: string };
+    try {
+      bruto = JSON.parse(contaServico) as typeof bruto;
+    } catch {
+      throw new DomainError(
+        'invalid_service_account',
+        'FIREBASE_SERVICE_ACCOUNT não é JSON válido. Cole o arquivo inteiro da conta de serviço.',
+      );
+    }
+    if (!bruto.client_email || !bruto.private_key) {
+      throw new DomainError(
+        'invalid_service_account',
+        'FIREBASE_SERVICE_ACCOUNT sem client_email ou private_key.',
+      );
+    }
+    credentials = {
+      client_email: bruto.client_email,
+      private_key: bruto.private_key.replace(/\\n/g, '\n'),
+    };
+  }
   const providerCode = (env['DEPIX_PROVIDER'] ?? 'sandbox') as AppConfig['depix']['providerCode'];
   const apiKey = env['DEPIX_API_KEY'];
   const realFundsFlag = env['ENABLE_REAL_FUNDS'] === 'yes';
@@ -72,7 +110,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     );
   }
 
-  if (environment !== 'production' && !emulatorHost && env['ALLOW_REAL_FIRESTORE'] !== 'yes') {
+  if (
+    environment !== 'production' &&
+    !emulatorHost &&
+    !contaServico &&
+    env['ALLOW_REAL_FIRESTORE'] !== 'yes'
+  ) {
     throw new DomainError(
       'real_firestore_outside_production',
       `APP_ENV=${environment} apontado para o projeto Firestore real "${projectId}" sem emulador. ` +
@@ -143,6 +186,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       projectId,
       ...(emulatorHost ? { emulatorHost } : {}),
       ...(env['FIRESTORE_DATABASE_ID'] ? { databaseId: env['FIRESTORE_DATABASE_ID'] } : {}),
+      ...(credentials ? { credentials } : {}),
     },
     port: Number(env['PORT'] ?? 3001),
     // Salt do hash de IP: sem ele, o hash é reversível por força bruta (o

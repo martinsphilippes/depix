@@ -17,5 +17,9 @@
     "@depix/providers": "*",
     "@fastify/cors": "^11.3.0",
     "fastify": "^5.2.0"
+  },
+  "exports": {
+    "./server": "./src/server.ts",
+    "./config": "./src/config.ts"
   }
 }
