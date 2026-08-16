@@ -33,7 +33,17 @@ export interface AppConfig {
      * `GOOGLE_APPLICATION_CREDENTIALS` apontaria. A alternativa é a variável
      * `FIREBASE_SERVICE_ACCOUNT` com o JSON inteiro.
      */
-    readonly credentials?: { client_email: string; private_key: string };
+    readonly credentials?: {
+      client_email: string;
+      private_key: string;
+      /**
+       * Identificador público da chave (o mesmo que aparece na lista de
+       * chaves do console). Guardado para diagnóstico: duas chaves da mesma
+       * conta são idênticas a olho nu — mesmo e-mail, mesmo client_id — e é
+       * este campo que o /health expõe para dizer QUAL delas está carregada.
+       */
+      private_key_id?: string;
+    };
   };
   readonly port: number;
   readonly ipHashSalt: string;
@@ -77,7 +87,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   let credentials: AppConfig['firebase']['credentials'];
   const contaServico = env['FIREBASE_SERVICE_ACCOUNT'];
   if (contaServico) {
-    let bruto: { client_email?: string; private_key?: string };
+    let bruto: { client_email?: string; private_key?: string; private_key_id?: string };
     try {
       bruto = JSON.parse(contaServico) as typeof bruto;
     } catch {
@@ -95,6 +105,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     credentials = {
       client_email: bruto.client_email,
       private_key: bruto.private_key.replace(/\\n/g, '\n'),
+      ...(bruto.private_key_id ? { private_key_id: bruto.private_key_id } : {}),
     };
   }
   const providerCode = (env['DEPIX_PROVIDER'] ?? 'sandbox') as AppConfig['depix']['providerCode'];

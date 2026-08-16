@@ -567,11 +567,18 @@ export async function buildServer(deps: ServerDeps): Promise<FastifyInstance> {
   // --- Saúde ----------------------------------------------------------------
   app.get('/health', async () => {
     const checks: Record<string, string> = {};
+    // Detalhe do porquê, não só o quê. "firestore: fail" sozinho obriga a
+    // adivinhar entre chave revogada, permissão faltando e banco inexistente
+    // — três causas com três correções diferentes. As mensagens de erro do
+    // Google aqui não carregam segredo: são da família "Invalid JWT
+    // Signature" e "PERMISSION_DENIED".
+    let firestoreError: string | undefined;
     try {
       await deps.db.collection('assets').limit(1).get();
       checks['firestore'] = 'ok';
-    } catch {
+    } catch (err) {
       checks['firestore'] = 'fail';
+      firestoreError = String(err instanceof Error ? err.message : err).slice(0, 160);
     }
     return {
       status: Object.values(checks).every((v) => v === 'ok') ? 'ok' : 'degraded',
@@ -580,6 +587,13 @@ export async function buildServer(deps: ServerDeps): Promise<FastifyInstance> {
       emulated: Boolean(deps.config.firebase.emulatorHost),
       provider: deps.depixProvider.info.code,
       checks,
+      ...(firestoreError ? { firestoreError } : {}),
+      // O ID é público (está na URL x509 da própria conta) e responde a
+      // pergunta que já custou uma rodada de depuração: QUAL chave está
+      // carregada — duas chaves da mesma conta são indistinguíveis a olho.
+      ...(deps.config.firebase.credentials?.private_key_id
+        ? { credentialKeyId: deps.config.firebase.credentials.private_key_id }
+        : {}),
     };
   });
 
