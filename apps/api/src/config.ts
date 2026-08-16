@@ -69,7 +69,25 @@ function required(env: NodeJS.ProcessEnv, name: string): string {
   return value;
 }
 
-export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
+/**
+ * Espaço e quebra de linha nas pontas de QUALQUER variável são lixo de
+ * colagem, nunca intenção. Um FIREBASE_PROJECT_ID colado num painel com
+ * "\n\n" no final passou por todos os gates e só quebrou dentro do gRPC do
+ * Firestore, em produção, com "Metadata string value contains illegal
+ * characters" — três camadas longe da causa. Limpar na leitura elimina a
+ * classe inteira, e o único valor com quebras de linha legítimas
+ * (FIREBASE_SERVICE_ACCOUNT) as tem no MEIO, onde o trim não toca.
+ */
+function limparAmbiente(bruto: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const limpo: NodeJS.ProcessEnv = {};
+  for (const [chave, valor] of Object.entries(bruto)) {
+    limpo[chave] = valor === undefined ? undefined : valor.trim();
+  }
+  return limpo;
+}
+
+export function loadConfig(ambienteBruto: NodeJS.ProcessEnv = process.env): AppConfig {
+  const env = limparAmbiente(ambienteBruto);
   const environment = (env['APP_ENV'] ?? 'development') as Environment;
   if (!['development', 'testnet', 'staging', 'production'].includes(environment)) {
     throw new DomainError('invalid_config', `APP_ENV inválido: ${environment}`);

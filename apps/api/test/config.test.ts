@@ -227,6 +227,37 @@ describe('gate do WebAuthn', () => {
   });
 });
 
+describe('higiene de colagem — espaço e quebra de linha nas pontas', () => {
+  // Aconteceu de verdade: FIREBASE_PROJECT_ID colado num painel com "\n\n"
+  // no final passou por todos os gates e só quebrou dentro do gRPC do
+  // Firestore, em produção, com "Metadata string value contains illegal
+  // characters" — três camadas longe da causa.
+  it('limpa as pontas de qualquer variável', () => {
+    const c = loadConfig({
+      ...BASE,
+      APP_ENV: 'development',
+      FIREBASE_PROJECT_ID: 'demo-depix-dev\n\n',
+      IP_HASH_SALT: '  salt-com-espaco  ',
+    } as never);
+
+    assert.equal(c.firebase.projectId, 'demo-depix-dev');
+    assert.equal(c.ipHashSalt, 'salt-com-espaco');
+  });
+
+  it('as quebras de linha DENTRO do JSON da conta de serviço sobrevivem', () => {
+    const c = loadConfig({
+      ...BASE,
+      APP_ENV: 'development',
+      FIREBASE_SERVICE_ACCOUNT:
+        '\n {"client_email":"sa@p.iam.gserviceaccount.com","private_key":"-----BEGIN PRIVATE KEY-----\\nabc\\n-----END PRIVATE KEY-----\\n","private_key_id":"cafe1234"}\n',
+    } as never);
+
+    assert.equal(c.firebase.credentials?.client_email, 'sa@p.iam.gserviceaccount.com');
+    assert.match(c.firebase.credentials?.private_key ?? '', /BEGIN PRIVATE KEY-----\nabc\n/);
+    assert.equal(c.firebase.credentials?.private_key_id, 'cafe1234');
+  });
+});
+
 describe('banner de inicialização', () => {
   it('deixa óbvio quando há dinheiro real em jogo', () => {
     assert.match(startupBanner(loadConfig(PROD as never)), /FUNDOS REAIS/);

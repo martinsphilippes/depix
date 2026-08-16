@@ -29,7 +29,10 @@ const KEY_BYTES = 32;
  * tamanho existe para que uma chave fraca não passe despercebida.
  */
 export function loadEncryptionKey(env: NodeJS.ProcessEnv = process.env): Buffer {
-  const raw = env['ENCRYPTION_KEY'];
+  // O trim tem história: variável colada em painel vem com quebra de linha
+  // no final. O decodificador de base64 do Node a ignoraria por acaso —
+  // melhor limpar de propósito do que depender disso.
+  const raw = env['ENCRYPTION_KEY']?.trim();
   if (!raw) {
     throw new DomainError(
       'missing_encryption_key',
