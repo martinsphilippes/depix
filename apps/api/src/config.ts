@@ -79,9 +79,13 @@ function required(env: NodeJS.ProcessEnv, name: string): string {
  * (FIREBASE_SERVICE_ACCOUNT) as tem no MEIO, onde o trim não toca.
  */
 function limparAmbiente(bruto: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-  const limpo: NodeJS.ProcessEnv = {};
-  for (const [chave, valor] of Object.entries(bruto)) {
-    limpo[chave] = valor === undefined ? undefined : valor.trim();
+  // Começa da cópia, não de {}: o Next tipa ProcessEnv com NODE_ENV
+  // obrigatório, e um literal vazio não satisfaz esse tipo no build do
+  // apps/web (o typecheck da raiz aceita — a diferença só aparece lá).
+  const limpo = { ...bruto };
+  for (const chave of Object.keys(limpo)) {
+    const valor = limpo[chave];
+    if (valor !== undefined) limpo[chave] = valor.trim();
   }
   return limpo;
 }
