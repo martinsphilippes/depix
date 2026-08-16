@@ -23,7 +23,9 @@
   },
   "devDependencies": {
     "@types/react": "^19.0.2",
-    "@types/react-dom": "^19.0.2"
+    "@types/react-dom": "^19.0.2",
+    "typescript": "^5.7.2",
+    "@types/node": "^22.10.2"
   },
   "browserslist": [
     "supports es6-module and supports bigint"

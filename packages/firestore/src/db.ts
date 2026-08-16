@@ -97,7 +97,10 @@ function wrapTransaction(tx: Transaction): TxContext {
     },
     update(ref, data) {
       wroteSomething = true;
-      tx.update(ref, data);
+      // O cast existe porque `UpdateData<T>` com T desconhecido varia entre
+      // versões do TypeScript (5.8 recusa o que a 5.9 aceita). O contrato
+      // real — chaves para valores — é exatamente o que Record declara.
+      tx.update(ref, data as FirebaseFirestore.UpdateData<Record<string, unknown>>);
     },
     delete(ref) {
       wroteSomething = true;

@@ -34,10 +34,5 @@
     "firebase-tools": "^15.27.0",
     "playwright": "^1.62.1",
     "typescript": "^5.7.2"
-  },
-  "dependencies": {
-    "@google-cloud/firestore": "^9.0.0",
-    "@node-rs/argon2": "^2.1.0",
-    "cbor2": "^2.3.0"
   }
 }
