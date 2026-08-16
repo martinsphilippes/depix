@@ -27,6 +27,9 @@ const DECLARADOS: DeclaredIndex[] = JSON.parse(
  */
 const CONSULTAS: QueryShape[] = [
   // --- autenticação e limites ---
+  // Sem orderBy: a faixa implica ordenação ascendente, então rangeDirection
+  // fica de fora e o padrão (ASCENDING) vale. Verificado contra o projeto
+  // real — o índice DESC pronto foi recusado.
   {
     origem: 'rate-limit.ts countRecentAttempts (mode=failures)',
     collectionGroup: 'authAttempts',
@@ -39,101 +42,107 @@ const CONSULTAS: QueryShape[] = [
     equality: ['subject', 'kind'],
     range: 'createdAt',
   },
+  {
+    origem: 'limits.ts consumo da janela — sem orderBy',
+    collectionGroup: 'transactions',
+    equality: ['userId'],
+    range: 'createdAt',
+  },
 
-  // --- extrato ---
+  // --- extrato: orderBy('createdAt', 'desc') ---
   {
     origem: 'history.ts listHistory',
     collectionGroup: 'transactions',
     equality: ['userId'],
     range: 'createdAt',
+    rangeDirection: 'DESCENDING',
   },
   {
     origem: 'history.ts listHistory + kinds',
     collectionGroup: 'transactions',
     equality: ['userId', 'kind'],
     range: 'createdAt',
+    rangeDirection: 'DESCENDING',
   },
   {
     origem: 'history.ts listHistory + statuses',
     collectionGroup: 'transactions',
     equality: ['userId', 'status'],
     range: 'createdAt',
+    rangeDirection: 'DESCENDING',
   },
   {
     origem: 'history.ts listHistory + kinds + statuses',
     collectionGroup: 'transactions',
     equality: ['userId', 'kind', 'status'],
     range: 'createdAt',
-  },
-  {
-    origem: 'limits.ts consumo da janela',
-    collectionGroup: 'transactions',
-    equality: ['userId'],
-    range: 'createdAt',
+    rangeDirection: 'DESCENDING',
   },
 
-  // --- taxas ---
+  // --- taxas: orderBy('activeFrom', 'desc') ---
   {
     origem: 'fees.ts regra vigente',
     collectionGroup: 'feeRules',
     equality: ['operation'],
     range: 'activeFrom',
+    rangeDirection: 'DESCENDING',
   },
 
   // --- fila ---
   {
-    origem: 'queue.ts claim de job',
+    origem: 'queue.ts claim de job — orderBy(runAfter) ascendente',
     collectionGroup: 'jobQueue',
     equality: ['queue', 'completedAt', 'failedAt'],
     range: 'runAfter',
   },
   {
-    origem: 'queue.ts listDeadLetters + fila',
+    origem: 'queue.ts listDeadLetters + fila — != sem orderBy',
     collectionGroup: 'jobQueue',
     equality: ['queue'],
     range: 'failedAt',
   },
 
-  // --- avisos e contatos ---
+  // --- avisos: orderBy('createdAt', 'desc') ---
+  // (contacts fica de fora: listContacts só filtra igualdade e ordena em
+  // memória, então índice de campo único basta.)
   {
     origem: 'notifications.ts listagem',
     collectionGroup: 'notifications',
     equality: ['userId'],
     range: 'createdAt',
-  },
-  {
-    origem: 'contacts.ts listagem',
-    collectionGroup: 'contacts',
-    equality: ['userId'],
-    range: 'label',
+    rangeDirection: 'DESCENDING',
   },
 
-  // --- trilha de auditoria ---
+  // --- trilha de auditoria: orderBy('createdAt', 'desc') ---
   {
     origem: 'audit.ts listAuditLogs por objeto',
     collectionGroup: 'auditLogs',
     equality: ['objectId'],
     range: 'createdAt',
+    rangeDirection: 'DESCENDING',
   },
   {
     origem: 'audit.ts listAuditLogs por ator',
     collectionGroup: 'auditLogs',
     equality: ['actorId'],
     range: 'createdAt',
+    rangeDirection: 'DESCENDING',
   },
   {
     origem: 'audit.ts listAuditLogs por objeto e ator',
     collectionGroup: 'auditLogs',
     equality: ['objectId', 'actorId'],
     range: 'createdAt',
+    rangeDirection: 'DESCENDING',
   },
 
-  // --- conciliação ---
+  // --- conciliação: orderBy('startedAt', 'desc') ---
   {
     origem: 'reconciliation.ts execuções recentes',
     collectionGroup: 'reconciliationRuns',
     equality: ['status'],
     range: 'startedAt',
+    rangeDirection: 'DESCENDING',
   },
 ];
 
@@ -186,6 +195,32 @@ describe('cobertura de índices do Firestore', () => {
     };
 
     assert.equal(findCoveringIndex(consulta, indiceComSobra), undefined);
+  });
+
+  it('direção errada no campo de faixa não conta como cobertura', () => {
+    // Segundo defeito real encontrado: o índice de authAttempts, já com os
+    // campos certos, estava DESC — e a consulta, sem orderBy, implica ASC.
+    // O Firestore o recusou mesmo pronto.
+    const indiceDesc: DeclaredIndex[] = [
+      {
+        collectionGroup: 'authAttempts',
+        fields: [
+          { fieldPath: 'subject' },
+          { fieldPath: 'kind' },
+          { fieldPath: 'createdAt', order: 'DESCENDING' },
+        ],
+      },
+    ];
+
+    const semOrderBy: QueryShape = {
+      origem: 'teste',
+      collectionGroup: 'authAttempts',
+      equality: ['subject', 'kind'],
+      range: 'createdAt',
+    };
+
+    assert.equal(findCoveringIndex(semOrderBy, indiceDesc), undefined);
+    assert.ok(findCoveringIndex({ ...semOrderBy, rangeDirection: 'DESCENDING' }, indiceDesc));
   });
 
   it('a ordem entre os campos de igualdade não importa', () => {

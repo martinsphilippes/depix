@@ -80,7 +80,7 @@
       ]
     },
     {
-      "_comment": "Rate limiting: falhas recentes por sujeito (conta ou hash de IP).",
+      "_comment": "Rate limiting: falhas recentes por sujeito (conta ou hash de IP). Sem orderBy a faixa implica ordem ASCENDENTE — DESC não serve (verificado contra o projeto real).",
       "collectionGroup": "authAttempts",
       "queryScope": "COLLECTION",
       "fields": [
@@ -98,7 +98,7 @@
         },
         {
           "fieldPath": "createdAt",
-          "order": "DESCENDING"
+          "order": "ASCENDING"
         }
       ]
     },
@@ -280,7 +280,7 @@
       ]
     },
     {
-      "_comment": "countRecentAttempts no modo 'all' — o throttling de toda operação financeira (depósito, envio, consulta de chave). Filtra subject e kind e NÃO filtra succeeded, então o índice de quatro campos não serve: succeeded ficaria entre as igualdades e a faixa de createdAt.",
+      "_comment": "countRecentAttempts no modo 'all' — o throttling de toda operação financeira (depósito, envio, consulta de chave). Filtra subject e kind e NÃO filtra succeeded, então o índice de quatro campos não serve: succeeded ficaria entre as igualdades e a faixa de createdAt. Sem orderBy a faixa implica ordem ASCENDENTE — DESC não serve (verificado contra o projeto real).",
       "collectionGroup": "authAttempts",
       "queryScope": "COLLECTION",
       "fields": [
@@ -294,7 +294,7 @@
         },
         {
           "fieldPath": "createdAt",
-          "order": "DESCENDING"
+          "order": "ASCENDING"
         }
       ]
     },
@@ -371,6 +371,21 @@
         {
           "fieldPath": "createdAt",
           "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "_comment": "limits.ts: consumo da janela diária/mensal. Faixa em createdAt SEM orderBy — ordem implícita ascendente, o índice DESC do extrato não serve.",
+      "collectionGroup": "transactions",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "userId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "createdAt",
+          "order": "ASCENDING"
         }
       ]
     }
