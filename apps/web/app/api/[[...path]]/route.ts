@@ -33,6 +33,9 @@
 
 import type { FastifyInstance } from 'fastify';
 import type { NextRequest } from 'next/server';
+import { after } from 'next/server';
+
+import { processarFilas } from '../../../lib/worker-tick';
 
 export const runtime = 'nodejs';
 // Toda rota financeira lê e escreve: nada aqui pode ser cacheado ou
@@ -47,6 +50,13 @@ export const dynamic = 'force-dynamic';
  * própria operação.
  */
 let servidor: Promise<FastifyInstance> | null = null;
+
+/**
+ * Rotas cuja resposta bem-sucedida deixa trabalho na fila: depósito criado
+ * espera o webhook do operador, envio transmitido espera confirmação na
+ * cadeia, e o webhook em si é processado pela fila para poder ser refeito.
+ */
+const ENFILEIRAM = /^\/(pix\/deposits|depix\/sends|webhooks\/depix)/;
 
 async function obterServidor(): Promise<FastifyInstance> {
   servidor ??= (async () => {
@@ -94,6 +104,7 @@ async function despachar(request: NextRequest): Promise<Response> {
   }
 
   const url = new URL(request.url);
+  const rota = url.pathname.replace(/^\/api/, '') || '/';
   const corpo =
     request.method === 'GET' || request.method === 'HEAD'
       ? undefined
@@ -102,10 +113,18 @@ async function despachar(request: NextRequest): Promise<Response> {
   const resposta = await app.inject({
     method: request.method as 'GET',
     // `/api` é o prefixo do Next; as rotas do Fastify não o conhecem.
-    url: url.pathname.replace(/^\/api/, '') + url.search || '/',
+    url: rota + url.search,
     headers: Object.fromEntries(request.headers.entries()),
     ...(corpo && corpo.length > 0 ? { payload: corpo } : {}),
   });
+
+  // Operação que enfileira trabalho ganha um giro do worker no tempo
+  // emprestado do `after()` — depois da resposta, antes de a função ser
+  // congelada. É o que confirma transações em minutos mesmo com o cron do
+  // plano gratuito rodando uma vez por dia (ver lib/worker-tick.ts).
+  if (request.method === 'POST' && resposta.statusCode < 400 && ENFILEIRAM.test(rota)) {
+    after(processarFilas());
+  }
 
   const cabecalhos = new Headers();
   for (const [chave, valor] of Object.entries(resposta.headers)) {

@@ -157,10 +157,14 @@ Compartilhar → Adicionar à Tela de Início.
 origem que a interface — o que elimina CORS, deixa o cookie `SameSite=Strict`
 valer sem exceção, e faz o RP ID do WebAuthn ser o próprio domínio.
 
-**O worker vira cron**, a cada 10 minutos, porque a Vercel não hospeda
-processo contínuo. A diferença é de **latência**, não de correção: uma
-transação demora até um ciclo a mais para ser confirmada. O que não muda é que
-só o worker conclui transação, e só depois de ver confirmação real na cadeia.
+**O worker vira dois gatilhos**, porque a Vercel não hospeda processo
+contínuo. As operações que enfileiram trabalho (depósito, envio, webhook)
+disparam um giro do worker logo depois da própria resposta — é isso que
+confirma transações em minutos. E um cron diário faz a varredura de
+conciliação e serve de rede de segurança para qualquer job que tenha ficado
+para trás (o plano gratuito da Vercel só aceita cron diário). O que não muda
+é que só o worker conclui transação, e só depois de ver confirmação real na
+cadeia.
 
 Se a latência incomodar, o worker contínuo (`npm run worker`) roda em qualquer
 lugar que aceite processo longo — Railway, Fly.io, uma VM — apontando para o
@@ -168,6 +172,5 @@ mesmo Firestore. Os dois modos usam o mesmo código e podem coexistir: a fila
 usa lease, então dois workers não processam o mesmo job.
 
 **O custo:** dentro do plano gratuito da Vercel e do Firestore para uso de
-demonstração. O cron a cada 10 minutos são ~4.300 execuções/mês, e cada uma faz
-uma varredura de conciliação — se a cota apertar, aumente o intervalo em
-`apps/web/vercel.json`.
+demonstração. O giro por operação só roda quando alguém opera, e a
+conciliação roda uma vez por dia.
